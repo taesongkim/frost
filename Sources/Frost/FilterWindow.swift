@@ -196,8 +196,8 @@ private final class DragThroughView: NSView {
     override var mouseDownCanMoveWindow: Bool { true }
 }
 
-/// Small dark capsule with a single line (or wrapped lines) of white text. Clicks
-/// pass to the window as if it weren't there, so it can still be dragged by it.
+/// White text with a soft shadow (no background), sized to fit. Clicks pass to
+/// the window as if it weren't there, so it can still be dragged by it.
 final class Bubble: NSView {
     private let label = NSTextField(wrappingLabelWithString: "")
     private let padX: CGFloat, padY: CGFloat
@@ -207,8 +207,13 @@ final class Bubble: NSView {
         self.padY = padY
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(white: 0, alpha: 0.5).cgColor
-        label.font = .systemFont(ofSize: fontSize, weight: .medium)
+        // The shadow keeps white text readable over light content.
+        let glow = NSShadow()
+        glow.shadowColor = NSColor(white: 0, alpha: 0.55)
+        glow.shadowBlurRadius = 4
+        glow.shadowOffset = .zero
+        label.shadow = glow
+        label.font = .systemFont(ofSize: fontSize, weight: .semibold)
         label.textColor = NSColor(white: 1, alpha: 0.95)
         label.alignment = .center
         label.isSelectable = false
@@ -629,7 +634,10 @@ final class FilterController: NSObject, NSWindowDelegate {
     func show() {
         apply()
         panel.alphaValue = 0
+        // Key on arrival (Esc, Tab, 1–5 work immediately) without activating
+        // the app — it's a non-activating panel, like Spotlight.
         panel.orderFrontRegardless()
+        panel.makeKey()
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.14
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)

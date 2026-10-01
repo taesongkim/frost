@@ -265,9 +265,24 @@ private struct SelectAllTextField: NSViewRepresentable {
 }
 
 final class SelectAllNSTextField: NSTextField {
+    /// The window makes the field first responder *during* the click, just
+    /// before mouseDown — so "focus arrived this turn" means "focused by this
+    /// click". The flag clears on the next runloop pass, which keeps Tab-in
+    /// focus from making a later click select everything.
+    private var justFocused = false
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok {
+            justFocused = true
+            DispatchQueue.main.async { [weak self] in self?.justFocused = false }
+        }
+        return ok
+    }
+
     override func mouseDown(with event: NSEvent) {
-        let wasEditing = currentEditor() != nil
-        super.mouseDown(with: event)
-        if !wasEditing { currentEditor()?.selectAll(nil) }
+        let selectAll = justFocused
+        super.mouseDown(with: event) // returns after mouse-up; caret is placed
+        if selectAll { currentEditor()?.selectAll(nil) }
     }
 }
