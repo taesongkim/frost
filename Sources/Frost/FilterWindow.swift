@@ -53,7 +53,7 @@ final class FilterPanel: NSPanel {
 
     // MARK: Resizing
 
-    private static let edgeZone: CGFloat = 6
+    private static let edgeZone: CGFloat = 8
     private static let cornerZone: CGFloat = 16
 
     /// Which edges a point (window coords) would grab, if any.
@@ -227,6 +227,7 @@ final class FilterRootView: NSView {
     fileprivate let tint = DragThroughView()
     fileprivate let flashView = DragThroughView()
     let pill = PresetPill()
+    let closeButton = CloseButton()
     let nameBubble = Bubble(fontSize: 11, padX: 9, padY: 3, radius: nil)
     let hint = Bubble(fontSize: 13, padX: 14, padY: 8, radius: 10)
 
@@ -244,8 +245,8 @@ final class FilterRootView: NSView {
         // instead of letting them fall through to the window underneath.
         layer?.backgroundColor = NSColor(white: 1, alpha: 0.012).cgColor
         // Hairline so the pane's edge reads even at low blur.
-        layer?.borderWidth = 1
-        layer?.borderColor = NSColor(white: 1, alpha: 0.22).cgColor
+        layer?.borderWidth = 0.5
+        layer?.borderColor = NSColor(white: 1, alpha: 0.1).cgColor
 
         tint.wantsLayer = true
 
@@ -260,11 +261,13 @@ final class FilterRootView: NSView {
         }
 
         pill.alphaValue = 0
+        closeButton.alphaValue = 0
         nameBubble.alphaValue = 0
         hint.alphaValue = 0
         hint.maxLines = 3
         hint.text = "To dismiss: Press ESC or double-click."
         addSubview(pill)
+        addSubview(closeButton)
         addSubview(nameBubble)
         addSubview(hint)
     }
@@ -290,7 +293,9 @@ final class FilterRootView: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         guard let panel = window as? FilterPanel else { return }
-        let edges = panel.resizeEdges(at: event.locationInWindow)
+        let p = event.locationInWindow
+        let overButton = closeButton.alphaValue > 0.01 && closeButton.frame.contains(convert(p, from: nil))
+        let edges = overButton ? [] : panel.resizeEdges(at: p)
         (edges.isEmpty ? NSCursor.arrow : FilterPanel.cursor(for: edges)).set()
     }
 
@@ -302,7 +307,13 @@ final class FilterRootView: NSView {
 
     // MARK: Pill + name
 
+    private func layoutCloseButton() {
+        let size = CloseButton.size
+        closeButton.frame = NSRect(x: 12, y: bounds.height - 12 - size, width: size, height: size)
+    }
+
     func layoutPill() {
+        layoutCloseButton()
         let size = pill.fittingSize
         pill.frame = NSRect(x: ((bounds.width - size.width) / 2).rounded(),
                             y: 8, width: size.width, height: size.height)
@@ -325,10 +336,12 @@ final class FilterRootView: NSView {
         let fits = pill.frame.width + 16 <= bounds.width && bounds.height >= 70
         let show = (hovering || peeking) && fits && pill.dotCount > 1
         let showName = show && bounds.height >= 100
+        let showClose = hovering && bounds.width >= 60 && bounds.height >= 50
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             pill.animator().alphaValue = show ? 1 : 0
             nameBubble.animator().alphaValue = showName ? 1 : 0
+            closeButton.animator().alphaValue = showClose ? 1 : 0
         }
     }
 
@@ -383,6 +396,52 @@ final class FilterRootView: NSView {
         a.duration = 0.22
         a.timingFunction = CAMediaTimingFunction(name: .easeOut)
         flashView.layer?.add(a, forKey: "flash")
+    }
+}
+
+// MARK: - Close button
+
+final class CloseButton: NSView {
+    static let size: CGFloat = 20
+    var onClick: (() -> Void)?
+    private var hovered = false { didSet { needsDisplay = true } }
+    private var pressed = false { didSet { needsDisplay = true } }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero,
+                                       options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovered = true; NSCursor.arrow.set() }
+    override func mouseExited(with event: NSEvent) { hovered = false; pressed = false }
+    override func mouseDown(with event: NSEvent) { pressed = true }
+    override func mouseDragged(with event: NSEvent) {
+        pressed = bounds.contains(convert(event.locationInWindow, from: nil))
+    }
+    override func mouseUp(with event: NSEvent) {
+        let inside = bounds.contains(convert(event.locationInWindow, from: nil))
+        pressed = false
+        if inside { onClick?() }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(white: 0, alpha: pressed ? 0.65 : (hovered ? 0.55 : 0.42)).setFill()
+        NSBezierPath(ovalIn: bounds).fill()
+        let inset: CGFloat = 6.5
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: inset, y: inset))
+        path.line(to: NSPoint(x: bounds.width - inset, y: bounds.height - inset))
+        path.move(to: NSPoint(x: inset, y: bounds.height - inset))
+        path.line(to: NSPoint(x: bounds.width - inset, y: inset))
+        path.lineWidth = 1.6
+        path.lineCapStyle = .round
+        NSColor(white: 1, alpha: hovered ? 1 : 0.85).setStroke()
+        path.stroke()
     }
 }
 
@@ -506,9 +565,12 @@ final class FilterController: NSObject, NSWindowDelegate {
         panel.onNumberKey = { [weak self] i in self?.selectPreset(at: i, peek: true) }
         panel.onCycleKey = { [weak self] step in self?.cyclePreset(step) }
         panel.isControlHit = { [weak self] point in
-            guard let pill = self?.root.pill, pill.alphaValue > 0.01 else { return false }
-            return pill.bounds.contains(pill.convert(point, from: nil))
+            guard let root = self?.root else { return false }
+            return [root.pill, root.closeButton].contains { v in
+                v.alphaValue > 0.01 && v.bounds.contains(v.convert(point, from: nil))
+            }
         }
+        root.closeButton.onClick = { [weak self] in self?.dismiss() }
         root.pill.onSelect = { [weak self] i in self?.selectPreset(at: i) }
         root.pill.onHover = { [weak self] i in self?.preview(at: i) }
 

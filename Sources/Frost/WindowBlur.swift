@@ -30,3 +30,19 @@ enum WindowBlur {
     }
 }
 
+
+/// Background apps normally can't change the cursor — the frontmost app owns
+/// it — and Frost is never frontmost. This private connection property lets
+/// the resize cursors show anyway.
+enum BackgroundCursor {
+    private typealias ConnectionFn = @convention(c) () -> Int32
+    private typealias SetPropertyFn = @convention(c) (Int32, Int32, CFString, CFTypeRef) -> Int32
+
+    static func enable() {
+        let h = UnsafeMutableRawPointer(bitPattern: -2)
+        guard let c = dlsym(h, "CGSMainConnectionID") ?? dlsym(h, "SLSMainConnectionID"),
+              let s = dlsym(h, "CGSSetConnectionProperty") ?? dlsym(h, "SLSSetConnectionProperty") else { return }
+        let conn = unsafeBitCast(c, to: ConnectionFn.self)()
+        _ = unsafeBitCast(s, to: SetPropertyFn.self)(conn, conn, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
+    }
+}

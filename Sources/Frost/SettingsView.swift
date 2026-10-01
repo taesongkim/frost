@@ -14,6 +14,20 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            // Outside the Form so it never scrolls — the preview pane is a child
+            // window pinned over this rect and wouldn't follow a scroll.
+            if let i = selectedIndex {
+                PresetPreview(preset: store.presets[i])
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+            }
+            form
+        }
+        .frame(minWidth: 520, minHeight: 690)
+    }
+
+    private var form: some View {
         Form {
             Section("General") {
                 LabeledContent("New filter shortcut") { ShortcutRecorder() }
@@ -46,7 +60,6 @@ struct SettingsView: View {
 
         }
         .formStyle(.grouped)
-        .frame(minWidth: 520, minHeight: 600)
     }
 
     private var presetPicker: some View {
@@ -114,8 +127,10 @@ private struct PresetEditor: View {
     var body: some View {
         TextField("Name", text: $preset.name)
 
-        SliderRow(title: "Blur", value: $preset.blur, range: 0...Preset.maxBlur, step: 1,
-                  format: { "\(Int($0))" })
+        // No `step:` — that draws a tick mark per value. Round on write instead.
+        SliderRow(title: "Blur",
+                  value: Binding(get: { preset.blur }, set: { preset.blur = $0.rounded() }),
+                  range: 0...Preset.maxBlur, format: { "\(Int($0))" })
 
         LabeledContent("Tint") {
             HStack {

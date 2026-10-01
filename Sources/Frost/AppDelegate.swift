@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var filters: [FilterController] = []
     private var settingsWindow: NSWindow?
@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     static let defaultSize = NSSize(width: 640, height: 420)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        BackgroundCursor.enable()
         setUpStatusItem()
 
         HotKey.shared.handler = { [weak self] in self?.newFilter() }
@@ -118,11 +119,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             window.title = "Frost Settings"
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 560, height: 640))
+            window.setContentSize(NSSize(width: 560, height: 690))
+            window.delegate = self
             window.center()
             settingsWindow = window
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    // Rebuild Settings fresh each time so its preview pane re-attaches cleanly.
+    func windowWillClose(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === settingsWindow else { return }
+        DispatchQueue.main.async { self.settingsWindow = nil }
     }
 }
