@@ -386,21 +386,62 @@ final class FilterRootView: NSView {
         layoutName()
     }
 
-    private func layoutName() {
+    /// Dot the name label sits over; nil when hidden.
+    private var labelIndex: Int?
+    private var labelToken = 0
+    private static let labelRise: CGFloat = 4
+
+    /// Shows the name label over dot `index` — fading in while sliding up a
+    /// few points — or hides it for nil. Hiding waits a beat so sliding from
+    /// one dot to the next doesn't flash it out and back.
+    func showLabel(at index: Int?) {
+        labelToken += 1
+        let token = labelToken
+        guard let index, bounds.height >= 100, pill.dotCount > 1 else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self, self.labelToken == token else { return }
+                self.labelIndex = nil
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.12
+                    self.nameBubble.animator().alphaValue = 0
+                }
+            }
+            return
+        }
+        labelIndex = index
+        let target = labelFrame()
+        nameBubble.alphaValue = 0
+        nameBubble.frame = target.offsetBy(dx: 0, dy: -Self.labelRise)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.16
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            nameBubble.animator().alphaValue = 1
+            nameBubble.animator().frame = target
+        }
+    }
+
+    private func labelFrame() -> NSRect {
         let size = nameBubble.fit(maxWidth: max(40, bounds.width - 24))
-        nameBubble.frame = NSRect(x: ((bounds.width - size.width) / 2).rounded(),
-                                  y: pill.frame.maxY + 4, width: size.width, height: size.height)
+        let center = pill.frame.minX + pill.dotCenterX(labelIndex ?? pill.activeIndex)
+        // Centered over the dot, but kept inside the window.
+        let x = min(max(8, center - size.width / 2), bounds.width - 8 - size.width)
+        return NSRect(x: x.rounded(), y: pill.frame.maxY - 2, width: size.width, height: size.height)
+    }
+
+    private func layoutName() {
+        let f = labelFrame()
+        nameBubble.setFrameSize(f.size)
+        if labelIndex != nil { nameBubble.frame = f }
     }
 
     func updatePillVisibility() {
         let fits = pill.frame.width + 16 <= bounds.width && bounds.height >= 70
         let show = (hovering || peeking) && fits && pill.dotCount > 1
-        let showName = show && bounds.height >= 100
         let showClose = hovering && bounds.width >= 60 && bounds.height >= 50
+        if !show && labelIndex != nil { showLabel(at: nil) }
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             pill.animator().alphaValue = show ? 1 : 0
-            nameBubble.animator().alphaValue = showName ? 1 : 0
             closeButton.animator().alphaValue = showClose ? 1 : 0
         }
     }
@@ -411,9 +452,11 @@ final class FilterRootView: NSView {
         let token = peekToken
         peeking = true
         updatePillVisibility()
+        showLabel(at: pill.activeIndex)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
             guard let self, self.peekToken == token else { return }
             self.peeking = false
+            self.showLabel(at: nil)
             self.updatePillVisibility()
         }
     }
@@ -473,18 +516,14 @@ final class CloseButton: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        background.backgroundColor = NSColor(white: 0, alpha: 0.45).cgColor
+        // Mid-gray reads on both dark and light content.
+        background.backgroundColor = NSColor(white: 0.5, alpha: 0.75).cgColor
         background.opacity = 0
         layer?.addSublayer(background)
         glyph.strokeColor = NSColor.white.cgColor
         glyph.fillColor = nil
         glyph.lineWidth = 1.6
         glyph.lineCap = .round
-        // No background at rest, so the × carries its own shadow for contrast.
-        glyph.shadowColor = NSColor.black.cgColor
-        glyph.shadowOpacity = 0.55
-        glyph.shadowRadius = 2
-        glyph.shadowOffset = .zero
         layer?.addSublayer(glyph)
     }
 
@@ -512,8 +551,7 @@ final class CloseButton: NSView {
     private func updateLook() {
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.15)
-        background.opacity = pressed ? 1 : (hovered ? 0.8 : 0)
-        glyph.shadowOpacity = hovered ? 0 : 0.55
+        background.opacity = pressed ? 1 : (hovered ? 0.85 : 0)
         CATransaction.commit()
     }
 
@@ -619,10 +657,10 @@ final class ResizeGripView: NSView {
             let step: CGFloat = 4.5, r: CGFloat = 0.7, gap: CGFloat = 1.6
             let vertical = edges.contains(.left) || edges.contains(.right)
             let length = (vertical ? h : w) - span * 2
-            // Rows sit at ~6pt and ~9pt in, inside the 10pt grab zone.
-            let edgeInset: CGFloat = 6
-            let center = vertical ? (edges.contains(.left) ? edgeInset + gap : w - edgeInset - gap)
-                                  : (edges.contains(.bottom) ? edgeInset + gap : h - edgeInset - gap)
+            // Edge-to-outer-row equals row-to-row (2 * gap), so the rows sit
+            // at 2g and 4g from the edge.
+            let center = vertical ? (edges.contains(.left) ? 3 * gap : w - 3 * gap)
+                                  : (edges.contains(.bottom) ? 3 * gap : h - 3 * gap)
             for (row, offset) in [(0, -gap), (1, gap)] {
                 var t = CGFloat(row) * step / 2
                 while t <= length {
@@ -641,7 +679,7 @@ final class ResizeGripView: NSView {
 
 /// Compact in-window preset switcher: just the dots, so its width depends only
 /// on how many presets exist (capped at Preset.maxCount) and the dots never
-/// shift around. The preset name lives in a separate bubble above it.
+/// shift around. The preset name is a separate label above the hovered dot.
 final class PresetPill: NSView {
     var onSelect: ((Int) -> Void)?
     /// Index of the dot under the cursor, or nil when the cursor leaves the dots.
@@ -650,16 +688,15 @@ final class PresetPill: NSView {
 
     private var dots: [PresetDot] = []
 
-    private let dotWidth: CGFloat = 22
+    private let dotWidth: CGFloat = 18
     private let height: CGFloat = 30
-    private let pad: CGFloat = 6
+    private let pad: CGFloat = 2
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor(white: 0, alpha: 0.42).cgColor
-        layer?.cornerRadius = height / 2
-    }
+    /// Center x of dot `i`, in this view's coordinates.
+    func dotCenterX(_ i: Int) -> CGFloat { pad + (CGFloat(i) + 0.5) * dotWidth }
+    private(set) var activeIndex = 0
+
+    override init(frame: NSRect) { super.init(frame: frame) }
 
     required init?(coder: NSCoder) { fatalError() }
 
@@ -679,8 +716,9 @@ final class PresetPill: NSView {
             needsLayout = true
         }
         dotCount = presets.count
-        for (d, p) in zip(dots, presets) {
+        for (i, (d, p)) in zip(dots, presets).enumerated() {
             d.isActive = p.id == activeID
+            if d.isActive { activeIndex = i }
         }
     }
 
@@ -769,7 +807,10 @@ final class FilterController: NSObject, NSWindowDelegate {
         root.closeButton.onClick = { [weak self] in self?.dismiss() }
         panel.onTrackingEnded = { [weak self] in self?.root.syncHover() }
         root.pill.onSelect = { [weak self] i in self?.selectPreset(at: i) }
-        root.pill.onHover = { [weak self] i in self?.preview(at: i) }
+        root.pill.onHover = { [weak self] i in
+            self?.preview(at: i)
+            self?.root.showLabel(at: i)
+        }
 
         let store = Store.shared
         store.$presets
