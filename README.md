@@ -1,8 +1,16 @@
 # Frost
 
-A tiny macOS menu bar app that puts a frosted-glass pane over anything on your screen.
+A tiny macOS menu bar app that puts a blur pane over anything on your screen.
 
-Press **⇧⌘/** and a filter window appears in the middle of the screen your cursor is on. It floats above everything else. Drag it anywhere, resize it from any edge, and dismiss it with a double-click (or click it, then press Esc or ⌘W). Press the shortcut again for another one.
+Press **⇧⌘/** and a filter window appears in the middle of the screen your cursor is on. It floats above everything else. Drag it anywhere, resize it from any edge or corner, and dismiss it with a double-click, the × that appears on hover, or a click followed by Esc or ⌘W. Press the shortcut again for another one.
+
+It needs no permissions. There's no screen recording and no accessibility access; the blur is done by the window server.
+
+## Install
+
+Download the DMG from [Releases](https://github.com/taesongkim/frost/releases), open it, and drag Frost to Applications. It's signed and notarized. Requires macOS 14 (Sonoma) or later.
+
+Frost lives in the menu bar (no Dock icon). From there you can open Settings to change the shortcut, edit presets with a live preview, or turn on launch at login.
 
 ## Presets
 
