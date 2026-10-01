@@ -59,7 +59,7 @@ final class FilterPanel: NSPanel {
 
     // MARK: Resizing
 
-    static let edgeZone: CGFloat = 8
+    static let edgeZone: CGFloat = 10
     static let cornerZone: CGFloat = 16
 
     /// Which edges a point (window coords) would grab, if any.
@@ -548,13 +548,13 @@ final class ResizeGripView: NSView {
         for l in [edgeDots, cornerDots] {
             l.opacity = 0
             l.shadowColor = NSColor.black.cgColor
-            l.shadowOpacity = 0.2
+            l.shadowOpacity = 0
             l.shadowRadius = 1.5
             l.shadowOffset = .zero
             layer?.addSublayer(l)
         }
-        edgeDots.fillColor = NSColor(white: 1, alpha: 0.3).cgColor
-        cornerDots.fillColor = NSColor(white: 1, alpha: 0.35).cgColor
+        edgeDots.fillColor = NSColor(white: 1, alpha: 0.07).cgColor
+        cornerDots.fillColor = NSColor(white: 1, alpha: 0.07).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -590,7 +590,7 @@ final class ResizeGripView: NSView {
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
         let w = bounds.width, h = bounds.height
-        let inset = FilterPanel.edgeZone / 2
+        let inset: CGFloat = 4 // corner dots' margin from the edges
         let span = FilterPanel.cornerZone
 
         if edges.rawValue.nonzeroBitCount == 2 {
@@ -614,9 +614,10 @@ final class ResizeGripView: NSView {
             let step: CGFloat = 4.5, r: CGFloat = 0.7, gap: CGFloat = 1.6
             let vertical = edges.contains(.left) || edges.contains(.right)
             let length = (vertical ? h : w) - span * 2
-            // Outer row sits `inset` from the edge — same margin as the corner dots.
-            let center = vertical ? (edges.contains(.left) ? inset + gap : w - inset - gap)
-                                  : (edges.contains(.bottom) ? inset + gap : h - inset - gap)
+            // Rows sit at ~6pt and ~9pt in, inside the 10pt grab zone.
+            let edgeInset: CGFloat = 6
+            let center = vertical ? (edges.contains(.left) ? edgeInset + gap : w - edgeInset - gap)
+                                  : (edges.contains(.bottom) ? edgeInset + gap : h - edgeInset - gap)
             for (row, offset) in [(0, -gap), (1, gap)] {
                 var t = CGFloat(row) * step / 2
                 while t <= length {
