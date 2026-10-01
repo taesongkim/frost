@@ -15,16 +15,16 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            form
             // Outside the Form so it never scrolls — the preview pane is a child
             // window pinned over this rect and wouldn't follow a scroll.
             if let i = selectedIndex {
                 PresetPreview(preset: store.presets[i])
                     .padding(.horizontal, 20)
-                    .padding(.top, 16)
+                    .padding(.bottom, 20)
             }
-            form
         }
-        .frame(minWidth: 520, minHeight: 690)
+        .frame(minWidth: 520, minHeight: 600)
     }
 
     private var form: some View {
@@ -125,7 +125,9 @@ private struct PresetEditor: View {
     @Binding var preset: Preset
 
     var body: some View {
-        TextField("Name", text: $preset.name)
+        LabeledContent("Name") {
+            SelectAllTextField(text: $preset.name)
+        }
 
         // No `step:` — that draws a tick mark per value. Round on write instead.
         SliderRow(title: "Blur",
@@ -226,5 +228,46 @@ private struct ShortcutRecorder: View {
             recording = false
             HotKey.shared.register(store.hotKey)
         }
+    }
+}
+
+/// Plain trailing-aligned text field that selects everything on the click that
+/// starts editing, so a preset name can be replaced by just typing.
+private struct SelectAllTextField: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeNSView(context: Context) -> SelectAllNSTextField {
+        let field = SelectAllNSTextField()
+        field.isBordered = false
+        field.drawsBackground = false
+        field.alignment = .right
+        field.lineBreakMode = .byTruncatingTail
+        field.usesSingleLineMode = true
+        field.placeholderString = "Name"
+        field.delegate = context.coordinator
+        return field
+    }
+
+    func updateNSView(_ field: SelectAllNSTextField, context: Context) {
+        if field.stringValue != text { field.stringValue = text }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+
+        func controlTextDidChange(_ note: Notification) {
+            if let field = note.object as? NSTextField { text.wrappedValue = field.stringValue }
+        }
+    }
+}
+
+final class SelectAllNSTextField: NSTextField {
+    override func mouseDown(with event: NSEvent) {
+        let wasEditing = currentEditor() != nil
+        super.mouseDown(with: event)
+        if !wasEditing { currentEditor()?.selectAll(nil) }
     }
 }

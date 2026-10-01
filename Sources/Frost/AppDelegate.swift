@@ -119,13 +119,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             window.title = "Frost Settings"
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 560, height: 690))
+            window.setContentSize(NSSize(width: 560, height: 600))
             window.delegate = self
             window.center()
             settingsWindow = window
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+        // Don't drop the cursor into the first text field on open.
+        DispatchQueue.main.async { self.settingsWindow?.makeFirstResponder(nil) }
     }
 
     // Rebuild Settings fresh each time so its preview pane re-attaches cleanly.

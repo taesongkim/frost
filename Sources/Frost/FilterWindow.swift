@@ -26,12 +26,18 @@ final class FilterPanel: NSPanel {
     var onCycleKey: ((Int) -> Void)?
     /// Points (in window coords) that belong to interactive controls, not the pane.
     var isControlHit: ((NSPoint) -> Bool)?
+    /// After a move/resize drag: hover state may be stale (the tracking loop
+    /// swallows enter/exit events), so the content needs to re-sync.
+    var onTrackingEnded: (() -> Void)?
 
     init(contentRect: NSRect) {
         super.init(contentRect: contentRect,
                    styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
-        isMovableByWindowBackground = true
+        // Moving is handled in sendEvent. AppKit's background-drag starts at the
+        // WindowServer level on mouse-down, so it would also move the window
+        // while we're resizing from a corner.
+        isMovableByWindowBackground = false
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
@@ -92,12 +98,13 @@ final class FilterPanel: NSPanel {
 
     private func trackResize(_ edges: ResizeEdges) {
         let startMouse = NSEvent.mouseLocation
-        let start = frame
+        let start = frame.integral
         let cursor = Self.cursor(for: edges)
         while let e = nextEvent(matching: [.leftMouseDragged, .leftMouseUp]), e.type != .leftMouseUp {
             cursor.set()
             let m = NSEvent.mouseLocation
-            let dx = m.x - startMouse.x, dy = m.y - startMouse.y
+            // Whole-point deltas keep the opposite (anchored) edges exactly put.
+            let dx = (m.x - startMouse.x).rounded(), dy = (m.y - startMouse.y).rounded()
             var f = start
             if edges.contains(.left) {
                 f.size.width = max(minSize.width, start.width - dx)
@@ -111,33 +118,48 @@ final class FilterPanel: NSPanel {
             } else if edges.contains(.top) {
                 f.size.height = max(minSize.height, start.height + dy)
             }
-            setFrame(f.integral, display: true)
+            setFrame(f, display: true)
         }
+        onTrackingEnded?()
+    }
+
+    /// Moves the window with the mouse. Returns true if it moved at all (i.e.
+    /// this was a drag, not a click).
+    private func trackMove() -> Bool {
+        let startMouse = NSEvent.mouseLocation
+        let start = frame.origin
+        var moved = false
+        while let e = nextEvent(matching: [.leftMouseDragged, .leftMouseUp]), e.type != .leftMouseUp {
+            let m = NSEvent.mouseLocation
+            let dx = (m.x - startMouse.x).rounded(), dy = (m.y - startMouse.y).rounded()
+            if !moved && abs(dx) < 3 && abs(dy) < 3 { continue }
+            moved = true
+            setFrameOrigin(NSPoint(x: start.x + dx, y: start.y + dy))
+        }
+        if moved { onTrackingEnded?() }
+        return moved
     }
 
     // MARK: Events
-
-    private var mouseDownFrame: NSRect?
 
     override func sendEvent(_ event: NSEvent) {
         switch event.type {
         case .leftMouseDown where !(isControlHit?(event.locationInWindow) ?? false):
             let edges = resizeEdges(at: event.locationInWindow)
             if !edges.isEmpty, event.clickCount == 1 {
-                mouseDownFrame = nil
+                makeKey()
                 trackResize(edges)
                 return
             }
             if event.clickCount >= 2 {
-                mouseDownFrame = nil
                 onDoubleClick?()
                 return
             }
-            mouseDownFrame = frame
+            // Still give AppKit the mouse-down so the panel becomes key (Esc/Tab).
+            super.sendEvent(event)
             onClick?()
-        case .leftMouseUp:
-            if let start = mouseDownFrame, start == frame, event.clickCount == 1 { onPlainClick?() }
-            mouseDownFrame = nil
+            if !trackMove() { onPlainClick?() }
+            return
         default:
             break
         }
@@ -291,6 +313,24 @@ final class FilterRootView: NSView {
         NSCursor.arrow.set()
     }
 
+    /// Re-derives hover from where the mouse actually is. Needed after a
+    /// move/resize: the drag loop eats the mouse-exited event, so the dots and
+    /// close button would otherwise stay up after you let go outside.
+    func syncHover() {
+        guard let window else { return }
+        let inside = window.frame.contains(NSEvent.mouseLocation)
+        if inside != hovering {
+            hovering = inside
+            updatePillVisibility()
+        }
+        if inside, let panel = window as? FilterPanel {
+            let edges = panel.resizeEdges(at: window.mouseLocationOutsideOfEventStream)
+            (edges.isEmpty ? NSCursor.arrow : FilterPanel.cursor(for: edges)).set()
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
+
     override func mouseMoved(with event: NSEvent) {
         guard let panel = window as? FilterPanel else { return }
         let p = event.locationInWindow
@@ -351,7 +391,7 @@ final class FilterRootView: NSView {
         let token = peekToken
         peeking = true
         updatePillVisibility()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
             guard let self, self.peekToken == token else { return }
             self.peeking = false
             self.updatePillVisibility()
@@ -571,6 +611,7 @@ final class FilterController: NSObject, NSWindowDelegate {
             }
         }
         root.closeButton.onClick = { [weak self] in self?.dismiss() }
+        panel.onTrackingEnded = { [weak self] in self?.root.syncHover() }
         root.pill.onSelect = { [weak self] i in self?.selectPreset(at: i) }
         root.pill.onHover = { [weak self] i in self?.preview(at: i) }
 
@@ -594,6 +635,7 @@ final class FilterController: NSObject, NSWindowDelegate {
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
         }
+        root.showHint()
     }
 
     func dismiss(animated: Bool = true) {
