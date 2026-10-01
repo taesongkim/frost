@@ -3,9 +3,18 @@ import Combine
 
 // MARK: - Panel
 
-/// Titled (for native edge-resizing, rounded corners and shadow) but with the
-/// title bar made invisible and the traffic lights hidden. Non-activating, so
-/// summoning it never steals focus from what you're typing in.
+struct ResizeEdges: OptionSet {
+    let rawValue: Int
+    static let left = ResizeEdges(rawValue: 1 << 0)
+    static let right = ResizeEdges(rawValue: 1 << 1)
+    static let bottom = ResizeEdges(rawValue: 1 << 2)
+    static let top = ResizeEdges(rawValue: 1 << 3)
+}
+
+/// Borderless, square-cornered pane. (The WindowServer blur fills the window's
+/// full rectangle, so a titled window's rounded corners left blur wedges
+/// poking out.) Borderless windows don't get system edge-resizing, so the
+/// panel does its own. Non-activating, so summoning it never steals focus.
 final class FilterPanel: NSPanel {
     var onClick: (() -> Void)?
     /// A click that didn't turn into a drag or resize.
@@ -20,13 +29,8 @@ final class FilterPanel: NSPanel {
 
     init(contentRect: NSRect) {
         super.init(contentRect: contentRect,
-                   styleMask: [.titled, .resizable, .fullSizeContentView, .nonactivatingPanel],
+                   styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
-        titleVisibility = .hidden
-        titlebarAppearsTransparent = true
-        for b in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-            standardWindowButton(b)?.isHidden = true
-        }
         isMovableByWindowBackground = true
         isOpaque = false
         backgroundColor = .clear
@@ -47,11 +51,83 @@ final class FilterPanel: NSPanel {
     // Let it go anywhere, including over the menu bar.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 
+    // MARK: Resizing
+
+    private static let edgeZone: CGFloat = 6
+    private static let cornerZone: CGFloat = 16
+
+    /// Which edges a point (window coords) would grab, if any.
+    func resizeEdges(at p: NSPoint) -> ResizeEdges {
+        let w = frame.width, h = frame.height
+        guard p.x >= 0, p.y >= 0, p.x <= w, p.y <= h else { return [] }
+        let nearL = p.x < Self.cornerZone, nearR = p.x > w - Self.cornerZone
+        let nearB = p.y < Self.cornerZone, nearT = p.y > h - Self.cornerZone
+        let onL = p.x < Self.edgeZone, onR = p.x > w - Self.edgeZone
+        let onB = p.y < Self.edgeZone, onT = p.y > h - Self.edgeZone
+        var e: ResizeEdges = []
+        if onL || (nearL && (onB || onT)) { e.insert(.left) }
+        if onR || (nearR && (onB || onT)) { e.insert(.right) }
+        if onB || (nearB && (onL || onR)) { e.insert(.bottom) }
+        if onT || (nearT && (onL || onR)) { e.insert(.top) }
+        return e
+    }
+
+    static func cursor(for edges: ResizeEdges) -> NSCursor {
+        if #available(macOS 15.0, *) {
+            let pos: NSCursor.FrameResizePosition
+            switch edges {
+            case [.top, .left]: pos = .topLeft
+            case [.top, .right]: pos = .topRight
+            case [.bottom, .left]: pos = .bottomLeft
+            case [.bottom, .right]: pos = .bottomRight
+            case .top: pos = .top
+            case .bottom: pos = .bottom
+            case .left: pos = .left
+            default: pos = .right
+            }
+            return .frameResize(position: pos, directions: .all)
+        }
+        return edges.contains(.left) || edges.contains(.right) ? .resizeLeftRight : .resizeUpDown
+    }
+
+    private func trackResize(_ edges: ResizeEdges) {
+        let startMouse = NSEvent.mouseLocation
+        let start = frame
+        let cursor = Self.cursor(for: edges)
+        while let e = nextEvent(matching: [.leftMouseDragged, .leftMouseUp]), e.type != .leftMouseUp {
+            cursor.set()
+            let m = NSEvent.mouseLocation
+            let dx = m.x - startMouse.x, dy = m.y - startMouse.y
+            var f = start
+            if edges.contains(.left) {
+                f.size.width = max(minSize.width, start.width - dx)
+                f.origin.x = start.maxX - f.width
+            } else if edges.contains(.right) {
+                f.size.width = max(minSize.width, start.width + dx)
+            }
+            if edges.contains(.bottom) {
+                f.size.height = max(minSize.height, start.height - dy)
+                f.origin.y = start.maxY - f.height
+            } else if edges.contains(.top) {
+                f.size.height = max(minSize.height, start.height + dy)
+            }
+            setFrame(f.integral, display: true)
+        }
+    }
+
+    // MARK: Events
+
     private var mouseDownFrame: NSRect?
 
     override func sendEvent(_ event: NSEvent) {
         switch event.type {
         case .leftMouseDown where !(isControlHit?(event.locationInWindow) ?? false):
+            let edges = resizeEdges(at: event.locationInWindow)
+            if !edges.isEmpty, event.clickCount == 1 {
+                mouseDownFrame = nil
+                trackResize(edges)
+                return
+            }
             if event.clickCount >= 2 {
                 mouseDownFrame = nil
                 onDoubleClick?()
@@ -167,6 +243,9 @@ final class FilterRootView: NSView {
         // A hair of opacity so a fully clear preset still catches clicks
         // instead of letting them fall through to the window underneath.
         layer?.backgroundColor = NSColor(white: 1, alpha: 0.012).cgColor
+        // Hairline so the pane's edge reads even at low blur.
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor(white: 1, alpha: 0.22).cgColor
 
         tint.wantsLayer = true
 
@@ -198,12 +277,22 @@ final class FilterRootView: NSView {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero,
-                                       options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
                                        owner: self, userInfo: nil))
     }
 
     override func mouseEntered(with event: NSEvent) { hovering = true; updatePillVisibility() }
-    override func mouseExited(with event: NSEvent) { hovering = false; updatePillVisibility() }
+    override func mouseExited(with event: NSEvent) {
+        hovering = false
+        updatePillVisibility()
+        NSCursor.arrow.set()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard let panel = window as? FilterPanel else { return }
+        let edges = panel.resizeEdges(at: event.locationInWindow)
+        (edges.isEmpty ? NSCursor.arrow : FilterPanel.cursor(for: edges)).set()
+    }
 
     override func layout() {
         super.layout()
