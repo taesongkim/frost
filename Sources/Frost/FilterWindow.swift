@@ -548,13 +548,13 @@ final class ResizeGripView: NSView {
         for l in [edgeDots, cornerDots] {
             l.opacity = 0
             l.shadowColor = NSColor.black.cgColor
-            l.shadowOpacity = 0.5
+            l.shadowOpacity = 0.2
             l.shadowRadius = 1.5
             l.shadowOffset = .zero
             layer?.addSublayer(l)
         }
-        edgeDots.fillColor = NSColor(white: 1, alpha: 0.75).cgColor
-        cornerDots.fillColor = NSColor(white: 1, alpha: 0.85).cgColor
+        edgeDots.fillColor = NSColor(white: 1, alpha: 0.3).cgColor
+        cornerDots.fillColor = NSColor(white: 1, alpha: 0.35).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError() }
