@@ -184,7 +184,6 @@ private struct ShortcutRecorder: View {
                 Button(recording ? "Type a shortcut…" : store.hotKey.display) {
                     recording ? stop() : start()
                 }
-                .frame(minWidth: 120)
                 if store.hotKey != .default && !recording {
                     Button("Reset") { store.resetHotKey(); message = nil }
                 }

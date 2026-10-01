@@ -21,6 +21,7 @@ struct PresetPreview: View {
                 .frame(width: 1)
         }
         .frame(height: 120)
+        .clipped()
         .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
     }
 }
@@ -36,13 +37,15 @@ private struct SampleContent: View {
     }
 
     private func band(text: Color, background: Color) -> some View {
-        Text(Self.sentence + " " + Self.sentence)
-            .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(text)
-            .lineLimit(2)
-            .padding(.horizontal, 14)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .background(background)
+        ZStack(alignment: .leading) {
+            Rectangle().fill(background)
+            Text(Self.sentence + " " + Self.sentence)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(text)
+                .lineLimit(2)
+                .padding(.horizontal, 14)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
