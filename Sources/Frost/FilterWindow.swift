@@ -59,8 +59,8 @@ final class FilterPanel: NSPanel {
 
     // MARK: Resizing
 
-    private static let edgeZone: CGFloat = 8
-    private static let cornerZone: CGFloat = 16
+    static let edgeZone: CGFloat = 8
+    static let cornerZone: CGFloat = 16
 
     /// Which edges a point (window coords) would grab, if any.
     func resizeEdges(at p: NSPoint) -> ResizeEdges {
@@ -255,6 +255,7 @@ final class FilterRootView: NSView {
     fileprivate let flashView = DragThroughView()
     let pill = PresetPill()
     let closeButton = CloseButton()
+    let grip = ResizeGripView()
     let nameBubble = Bubble(fontSize: 11, padX: 9, padY: 3, radius: nil)
     let hint = Bubble(fontSize: 13, padX: 14, padY: 8, radius: 10)
 
@@ -293,6 +294,9 @@ final class FilterRootView: NSView {
         hint.alphaValue = 0
         hint.maxLines = 3
         hint.text = "To dismiss: Press ESC or double-click."
+        grip.frame = bounds
+        grip.autoresizingMask = [.width, .height]
+        addSubview(grip)
         addSubview(pill)
         addSubview(closeButton)
         addSubview(nameBubble)
@@ -315,7 +319,17 @@ final class FilterRootView: NSView {
     override func mouseExited(with event: NSEvent) {
         hovering = false
         updatePillVisibility()
+        grip.show([])
         NSCursor.arrow.set()
+    }
+
+    /// Cursor + grip dots for whatever resize zone (if any) is under `p`.
+    private func updateResizeAffordance(at p: NSPoint) {
+        guard let panel = window as? FilterPanel else { return }
+        let overButton = closeButton.alphaValue > 0.01 && closeButton.frame.contains(convert(p, from: nil))
+        let edges = overButton ? [] : panel.resizeEdges(at: p)
+        (edges.isEmpty ? NSCursor.arrow : FilterPanel.cursor(for: edges)).set()
+        grip.show(edges)
     }
 
     /// Re-derives hover from where the mouse actually is. Needed after a
@@ -328,20 +342,16 @@ final class FilterRootView: NSView {
             hovering = inside
             updatePillVisibility()
         }
-        if inside, let panel = window as? FilterPanel {
-            let edges = panel.resizeEdges(at: window.mouseLocationOutsideOfEventStream)
-            (edges.isEmpty ? NSCursor.arrow : FilterPanel.cursor(for: edges)).set()
+        if inside {
+            updateResizeAffordance(at: window.mouseLocationOutsideOfEventStream)
         } else {
+            grip.show([])
             NSCursor.arrow.set()
         }
     }
 
     override func mouseMoved(with event: NSEvent) {
-        guard let panel = window as? FilterPanel else { return }
-        let p = event.locationInWindow
-        let overButton = closeButton.alphaValue > 0.01 && closeButton.frame.contains(convert(p, from: nil))
-        let edges = overButton ? [] : panel.resizeEdges(at: p)
-        (edges.isEmpty ? NSCursor.arrow : FilterPanel.cursor(for: edges)).set()
+        updateResizeAffordance(at: event.locationInWindow)
     }
 
     override func layout() {
@@ -449,10 +459,58 @@ final class FilterRootView: NSView {
 final class CloseButton: NSView {
     static let size: CGFloat = 20
     var onClick: (() -> Void)?
-    private var hovered = false { didSet { needsDisplay = true } }
-    private var pressed = false { didSet { needsDisplay = true } }
+
+    private let background = CALayer()
+    private let glyph = CAShapeLayer()
+    private var hovered = false { didSet { updateLook() } }
+    private var pressed = false { didSet { updateLook() } }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        background.backgroundColor = NSColor(white: 0, alpha: 0.45).cgColor
+        background.opacity = 0
+        layer?.addSublayer(background)
+        glyph.strokeColor = NSColor.white.cgColor
+        glyph.fillColor = nil
+        glyph.lineWidth = 1.6
+        glyph.lineCap = .round
+        // No background at rest, so the × carries its own shadow for contrast.
+        glyph.shadowColor = NSColor.black.cgColor
+        glyph.shadowOpacity = 0.55
+        glyph.shadowRadius = 2
+        glyph.shadowOffset = .zero
+        layer?.addSublayer(glyph)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
 
     override var mouseDownCanMoveWindow: Bool { false }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        background.frame = bounds
+        background.cornerRadius = bounds.width / 2
+        glyph.frame = bounds
+        let inset: CGFloat = 6.5
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: inset, y: inset))
+        path.addLine(to: CGPoint(x: bounds.width - inset, y: bounds.height - inset))
+        path.move(to: CGPoint(x: inset, y: bounds.height - inset))
+        path.addLine(to: CGPoint(x: bounds.width - inset, y: inset))
+        glyph.path = path
+        CATransaction.commit()
+    }
+
+    private func updateLook() {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.15)
+        background.opacity = pressed ? 1 : (hovered ? 0.8 : 0)
+        glyph.shadowOpacity = hovered ? 0 : 0.55
+        CATransaction.commit()
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -473,20 +531,101 @@ final class CloseButton: NSView {
         pressed = false
         if inside { onClick?() }
     }
+}
 
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor(white: 0, alpha: pressed ? 0.65 : (hovered ? 0.55 : 0.42)).setFill()
-        NSBezierPath(ovalIn: bounds).fill()
-        let inset: CGFloat = 6.5
-        let path = NSBezierPath()
-        path.move(to: NSPoint(x: inset, y: inset))
-        path.line(to: NSPoint(x: bounds.width - inset, y: bounds.height - inset))
-        path.move(to: NSPoint(x: inset, y: bounds.height - inset))
-        path.line(to: NSPoint(x: bounds.width - inset, y: inset))
-        path.lineWidth = 1.6
-        path.lineCapStyle = .round
-        NSColor(white: 1, alpha: hovered ? 1 : 0.85).setStroke()
-        path.stroke()
+// MARK: - Resize grip hint
+
+/// Dotted marks that fade in over whichever resize zone the cursor is on:
+/// a dotted line along an edge, a small triangle of dots in a corner.
+final class ResizeGripView: NSView {
+    private let edgeDots = CAShapeLayer()
+    private let cornerDots = CAShapeLayer()
+    private(set) var edges: ResizeEdges = []
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        for l in [edgeDots, cornerDots] {
+            l.opacity = 0
+            l.shadowColor = NSColor.black.cgColor
+            l.shadowOpacity = 0.5
+            l.shadowRadius = 1.5
+            l.shadowOffset = .zero
+            layer?.addSublayer(l)
+        }
+        // Edge: round dots via a zero-length dash with round caps.
+        edgeDots.strokeColor = NSColor(white: 1, alpha: 0.75).cgColor
+        edgeDots.fillColor = nil
+        edgeDots.lineWidth = 2
+        edgeDots.lineCap = .round
+        edgeDots.lineDashPattern = [0, 6]
+        cornerDots.fillColor = NSColor(white: 1, alpha: 0.85).cgColor
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func show(_ new: ResizeEdges) {
+        guard new != edges else { return }
+        edges = new
+        rebuildPaths()
+        let isCorner = new.rawValue.nonzeroBitCount == 2
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.15)
+        edgeDots.opacity = !new.isEmpty && !isCorner ? 1 : 0
+        cornerDots.opacity = isCorner ? 1 : 0
+        CATransaction.commit()
+    }
+
+    override func layout() {
+        super.layout()
+        rebuildPaths()
+    }
+
+    // Autoresizing during a live resize doesn't always trigger layout().
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        rebuildPaths()
+    }
+
+    private func rebuildPaths() {
+        guard !edges.isEmpty else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let w = bounds.width, h = bounds.height
+        let inset = FilterPanel.edgeZone / 2
+        let span = FilterPanel.cornerZone
+
+        if edges.rawValue.nonzeroBitCount == 2 {
+            // Corner: a 3-2-1 triangle of dots tucked into the corner.
+            let path = CGMutablePath()
+            let step: CGFloat = 4.5, r: CGFloat = 1.1
+            let sx: CGFloat = edges.contains(.left) ? 1 : -1
+            let sy: CGFloat = edges.contains(.bottom) ? 1 : -1
+            let ox = edges.contains(.left) ? inset : w - inset
+            let oy = edges.contains(.bottom) ? inset : h - inset
+            for i in 0..<3 {
+                for j in 0..<(3 - i) {
+                    let c = CGPoint(x: ox + sx * CGFloat(i) * step, y: oy + sy * CGFloat(j) * step)
+                    path.addEllipse(in: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
+                }
+            }
+            cornerDots.path = path
+        } else {
+            let path = CGMutablePath()
+            if edges.contains(.left) || edges.contains(.right) {
+                let x = edges.contains(.left) ? inset : w - inset
+                path.move(to: CGPoint(x: x, y: span))
+                path.addLine(to: CGPoint(x: x, y: h - span))
+            } else {
+                let y = edges.contains(.bottom) ? inset : h - inset
+                path.move(to: CGPoint(x: span, y: y))
+                path.addLine(to: CGPoint(x: w - span, y: y))
+            }
+            edgeDots.path = path
+        }
     }
 }
 
