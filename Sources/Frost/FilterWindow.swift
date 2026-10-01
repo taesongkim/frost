@@ -326,7 +326,8 @@ final class FilterRootView: NSView {
     /// Cursor + grip dots for whatever resize zone (if any) is under `p`.
     private func updateResizeAffordance(at p: NSPoint) {
         guard let panel = window as? FilterPanel else { return }
-        let overButton = closeButton.alphaValue > 0.01 && closeButton.frame.contains(convert(p, from: nil))
+        let local = convert(p, from: nil)
+        let overButton = [closeButton, pill].contains { $0.alphaValue > 0.01 && $0.frame.contains(local) }
         let edges = overButton ? [] : panel.resizeEdges(at: p)
         if overButton {
             NSCursor.pointingHand.set()
@@ -557,8 +558,8 @@ final class ResizeGripView: NSView {
             l.shadowOffset = .zero
             layer?.addSublayer(l)
         }
-        edgeDots.fillColor = NSColor(white: 1, alpha: 0.2).cgColor
-        cornerDots.fillColor = NSColor(white: 1, alpha: 0.2).cgColor
+        edgeDots.fillColor = NSColor(white: 1, alpha: 0.3).cgColor
+        cornerDots.fillColor = NSColor(white: 1, alpha: 0.3).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -713,7 +714,11 @@ private final class PresetDot: NSView {
                                        owner: self, userInfo: nil))
     }
 
-    override func mouseEntered(with event: NSEvent) { hovered = true; onHover?(true) }
+    override func mouseEntered(with event: NSEvent) {
+        hovered = true
+        NSCursor.pointingHand.set()
+        onHover?(true)
+    }
     override func mouseExited(with event: NSEvent) { hovered = false; onHover?(false) }
     override func mouseDown(with event: NSEvent) { onClick?() }
 
