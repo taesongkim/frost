@@ -553,12 +553,7 @@ final class ResizeGripView: NSView {
             l.shadowOffset = .zero
             layer?.addSublayer(l)
         }
-        // Edge: round dots via a zero-length dash with round caps.
-        edgeDots.strokeColor = NSColor(white: 1, alpha: 0.75).cgColor
-        edgeDots.fillColor = nil
-        edgeDots.lineWidth = 2
-        edgeDots.lineCap = .round
-        edgeDots.lineDashPattern = [0, 6]
+        edgeDots.fillColor = NSColor(white: 1, alpha: 0.75).cgColor
         cornerDots.fillColor = NSColor(white: 1, alpha: 0.85).cgColor
     }
 
@@ -614,15 +609,21 @@ final class ResizeGripView: NSView {
             }
             cornerDots.path = path
         } else {
+            // Edge: two staggered rows of small dots running along the edge.
             let path = CGMutablePath()
-            if edges.contains(.left) || edges.contains(.right) {
-                let x = edges.contains(.left) ? inset : w - inset
-                path.move(to: CGPoint(x: x, y: span))
-                path.addLine(to: CGPoint(x: x, y: h - span))
-            } else {
-                let y = edges.contains(.bottom) ? inset : h - inset
-                path.move(to: CGPoint(x: span, y: y))
-                path.addLine(to: CGPoint(x: w - span, y: y))
+            let step: CGFloat = 4.5, r: CGFloat = 0.7, gap: CGFloat = 1.6
+            let vertical = edges.contains(.left) || edges.contains(.right)
+            let length = (vertical ? h : w) - span * 2
+            let center = vertical ? (edges.contains(.left) ? inset : w - inset)
+                                  : (edges.contains(.bottom) ? inset : h - inset)
+            for (row, offset) in [(0, -gap), (1, gap)] {
+                var t = CGFloat(row) * step / 2
+                while t <= length {
+                    let along = span + t, across = center + offset
+                    let c = vertical ? CGPoint(x: across, y: along) : CGPoint(x: along, y: across)
+                    path.addEllipse(in: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
+                    t += step
+                }
             }
             edgeDots.path = path
         }
