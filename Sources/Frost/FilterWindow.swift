@@ -614,8 +614,9 @@ final class ResizeGripView: NSView {
             let step: CGFloat = 4.5, r: CGFloat = 0.7, gap: CGFloat = 1.6
             let vertical = edges.contains(.left) || edges.contains(.right)
             let length = (vertical ? h : w) - span * 2
-            let center = vertical ? (edges.contains(.left) ? inset : w - inset)
-                                  : (edges.contains(.bottom) ? inset : h - inset)
+            // Outer row sits `inset` from the edge — same margin as the corner dots.
+            let center = vertical ? (edges.contains(.left) ? inset + gap : w - inset - gap)
+                                  : (edges.contains(.bottom) ? inset + gap : h - inset - gap)
             for (row, offset) in [(0, -gap), (1, gap)] {
                 var t = CGFloat(row) * step / 2
                 while t <= length {
