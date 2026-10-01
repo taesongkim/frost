@@ -10,34 +10,42 @@ struct PresetPreview: View {
     var body: some View {
         ZStack {
             SampleContent()
-            PreviewPane(preset: preset)
+            // The pane covers only the right half: plain on the left, preset on
+            // the right, so the effect reads against the original.
+            HStack(spacing: 0) {
+                Color.clear
+                PreviewPane(preset: preset)
+            }
+            Rectangle()
+                .fill(Color.primary.opacity(0.35))
+                .frame(width: 1)
         }
-        .frame(height: 150)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .frame(height: 120)
+        .clipped()
+        .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
     }
 }
 
 private struct SampleContent: View {
+    private static let sentence = "The quick brown fox jumps over the lazy dog. Sphinx of black quartz, judge my vow."
+
     var body: some View {
-        HStack(spacing: 18) {
-            ZStack {
-                Circle().fill(Color.orange).frame(width: 70).offset(x: -18, y: -14)
-                Circle().fill(Color.pink).frame(width: 60).offset(x: 20, y: 16)
-                Circle().fill(Color.blue).frame(width: 44).offset(x: 26, y: -24)
-            }
-            .frame(width: 110)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Quarterly Notes").font(.system(size: 17, weight: .semibold))
-                Text("The quick brown fox jumps over the lazy dog. Meeting moved to 3:30 — bring the draft and the numbers from last week.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-            }
-            Spacer(minLength: 0)
+        VStack(spacing: 0) {
+            band(text: .black, background: .white)
+            band(text: .white, background: .black)
         }
-        .padding(.horizontal, 22)
+    }
+
+    private func band(text: Color, background: Color) -> some View {
+        ZStack(alignment: .leading) {
+            Rectangle().fill(background)
+            Text(Self.sentence + " " + Self.sentence)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(text)
+                .lineLimit(2)
+                .padding(.horizontal, 14)
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .textBackgroundColor))
     }
 }
 
@@ -69,8 +77,6 @@ final class PreviewPaneHost: NSView {
         pane.animationBehavior = .none
         let content = NSView()
         content.wantsLayer = true
-        content.layer?.cornerRadius = 10
-        content.layer?.masksToBounds = true
         tint.wantsLayer = true
         tint.autoresizingMask = [.width, .height]
         content.addSubview(tint)

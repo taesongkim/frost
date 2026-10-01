@@ -59,8 +59,8 @@ final class FilterPanel: NSPanel {
 
     // MARK: Resizing
 
-    private static let edgeZone: CGFloat = 8
-    private static let cornerZone: CGFloat = 16
+    static let edgeZone: CGFloat = 10
+    static let cornerZone: CGFloat = 16
 
     /// Which edges a point (window coords) would grab, if any.
     func resizeEdges(at p: NSPoint) -> ResizeEdges {
@@ -196,19 +196,26 @@ private final class DragThroughView: NSView {
     override var mouseDownCanMoveWindow: Bool { true }
 }
 
-/// Small dark capsule with a single line (or wrapped lines) of white text. Clicks
-/// pass to the window as if it weren't there, so it can still be dragged by it.
+/// White text with a soft shadow (no background), sized to fit. Clicks pass to
+/// the window as if it weren't there, so it can still be dragged by it.
 final class Bubble: NSView {
     private let label = NSTextField(wrappingLabelWithString: "")
     private let padX: CGFloat, padY: CGFloat
 
-    init(fontSize: CGFloat, padX: CGFloat, padY: CGFloat, radius: CGFloat?) {
+    init(fontSize: CGFloat, padX: CGFloat, padY: CGFloat, radius: CGFloat?, shadow: Bool = true) {
         self.padX = padX
         self.padY = padY
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(white: 0, alpha: 0.5).cgColor
-        label.font = .systemFont(ofSize: fontSize, weight: .medium)
+        if shadow {
+            // Keeps white text readable over light content.
+            let glow = NSShadow()
+            glow.shadowColor = NSColor(white: 0, alpha: 0.55)
+            glow.shadowBlurRadius = 4
+            glow.shadowOffset = .zero
+            label.shadow = glow
+        }
+        label.font = .systemFont(ofSize: fontSize, weight: .semibold)
         label.textColor = NSColor(white: 1, alpha: 0.95)
         label.alignment = .center
         label.isSelectable = false
@@ -250,7 +257,10 @@ final class FilterRootView: NSView {
     fileprivate let flashView = DragThroughView()
     let pill = PresetPill()
     let closeButton = CloseButton()
-    let nameBubble = Bubble(fontSize: 11, padX: 9, padY: 3, radius: nil)
+    let grip = ResizeGripView()
+    /// One name label per preset dot; each animates on its own.
+    private var dotLabels: [Bubble] = []
+    private var shownLabel: Int?
     let hint = Bubble(fontSize: 13, padX: 14, padY: 8, radius: 10)
 
     private var hovering = false
@@ -284,13 +294,14 @@ final class FilterRootView: NSView {
 
         pill.alphaValue = 0
         closeButton.alphaValue = 0
-        nameBubble.alphaValue = 0
         hint.alphaValue = 0
         hint.maxLines = 3
         hint.text = "To dismiss: Press ESC or double-click."
+        grip.frame = bounds
+        grip.autoresizingMask = [.width, .height]
+        addSubview(grip)
         addSubview(pill)
         addSubview(closeButton)
-        addSubview(nameBubble)
         addSubview(hint)
     }
 
@@ -309,8 +320,24 @@ final class FilterRootView: NSView {
     override func mouseEntered(with event: NSEvent) { hovering = true; updatePillVisibility() }
     override func mouseExited(with event: NSEvent) {
         hovering = false
+        showLabel(at: nil)
         updatePillVisibility()
+        grip.show([])
         NSCursor.arrow.set()
+    }
+
+    /// Cursor + grip dots for whatever resize zone (if any) is under `p`.
+    private func updateResizeAffordance(at p: NSPoint) {
+        guard let panel = window as? FilterPanel else { return }
+        let local = convert(p, from: nil)
+        let overButton = [closeButton, pill].contains { $0.alphaValue > 0.01 && $0.frame.contains(local) }
+        let edges = overButton ? [] : panel.resizeEdges(at: p)
+        if overButton {
+            NSCursor.pointingHand.set()
+        } else {
+            (edges.isEmpty ? NSCursor.arrow : FilterPanel.cursor(for: edges)).set()
+        }
+        grip.show(edges)
     }
 
     /// Re-derives hover from where the mouse actually is. Needed after a
@@ -323,20 +350,16 @@ final class FilterRootView: NSView {
             hovering = inside
             updatePillVisibility()
         }
-        if inside, let panel = window as? FilterPanel {
-            let edges = panel.resizeEdges(at: window.mouseLocationOutsideOfEventStream)
-            (edges.isEmpty ? NSCursor.arrow : FilterPanel.cursor(for: edges)).set()
+        if inside {
+            updateResizeAffordance(at: window.mouseLocationOutsideOfEventStream)
         } else {
+            grip.show([])
             NSCursor.arrow.set()
         }
     }
 
     override func mouseMoved(with event: NSEvent) {
-        guard let panel = window as? FilterPanel else { return }
-        let p = event.locationInWindow
-        let overButton = closeButton.alphaValue > 0.01 && closeButton.frame.contains(convert(p, from: nil))
-        let edges = overButton ? [] : panel.resizeEdges(at: p)
-        (edges.isEmpty ? NSCursor.arrow : FilterPanel.cursor(for: edges)).set()
+        updateResizeAffordance(at: event.locationInWindow)
     }
 
     override func layout() {
@@ -357,30 +380,90 @@ final class FilterRootView: NSView {
         let size = pill.fittingSize
         pill.frame = NSRect(x: ((bounds.width - size.width) / 2).rounded(),
                             y: 8, width: size.width, height: size.height)
-        layoutName()
+        layoutLabels()
         updatePillVisibility()
     }
 
-    func setName(_ name: String) {
-        nameBubble.text = name
-        layoutName()
+    /// Keeps one label per dot, texts matching the preset names.
+    func setLabelNames(_ names: [String]) {
+        if dotLabels.count != names.count {
+            dotLabels.forEach { $0.removeFromSuperview() }
+            dotLabels = names.map { _ in
+                let l = Bubble(fontSize: 11, padX: 4, padY: 2, radius: nil, shadow: false)
+                l.layer?.opacity = 0
+                addSubview(l)
+                return l
+            }
+            shownLabel = nil
+        }
+        for (l, n) in zip(dotLabels, names) { l.text = n.isEmpty ? "Untitled" : n }
+        layoutLabels()
     }
 
-    private func layoutName() {
-        let size = nameBubble.fit(maxWidth: max(40, bounds.width - 24))
-        nameBubble.frame = NSRect(x: ((bounds.width - size.width) / 2).rounded(),
-                                  y: pill.frame.maxY + 4, width: size.width, height: size.height)
+    private func layoutLabels() {
+        for (i, l) in dotLabels.enumerated() {
+            let size = l.fit(maxWidth: max(40, min(160, bounds.width - 16)))
+            let center = pill.frame.minX + pill.dotCenterX(i)
+            // Centered over its dot, but kept inside the window.
+            let x = min(max(8, center - size.width / 2), bounds.width - 8 - size.width)
+            l.frame = NSRect(x: x.rounded(), y: pill.frame.maxY - 2, width: size.width, height: size.height)
+        }
+    }
+
+    /// Shows the label over dot `index` (nil hides). Labels are independent:
+    /// the old one fades out in place while the new one fades in rising 3pt.
+    func showLabel(at index: Int?) {
+        let allowed = bounds.height >= 100 && pill.dotCount > 1
+        let target = allowed ? index : nil
+        guard target != shownLabel else { return }
+        if let old = shownLabel, dotLabels.indices.contains(old) { Self.fadeOut(dotLabels[old]) }
+        shownLabel = target
+        if let t = target, dotLabels.indices.contains(t) { Self.fadeIn(dotLabels[t]) }
+    }
+
+    private static func fadeIn(_ v: NSView) {
+        guard let l = v.layer else { return }
+        l.removeAllAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        l.opacity = 1
+        CATransaction.commit()
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0
+        fade.toValue = 1
+        let rise = CABasicAnimation(keyPath: "transform.translation.y")
+        rise.fromValue = -3
+        rise.toValue = 0
+        let group = CAAnimationGroup()
+        group.animations = [fade, rise]
+        group.duration = 0.16
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        l.add(group, forKey: "appear")
+    }
+
+    private static func fadeOut(_ v: NSView) {
+        guard let l = v.layer else { return }
+        let from = l.presentation()?.opacity ?? l.opacity
+        l.removeAllAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        l.opacity = 0
+        CATransaction.commit()
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = from
+        fade.toValue = 0
+        fade.duration = 0.12
+        l.add(fade, forKey: "disappear")
     }
 
     func updatePillVisibility() {
         let fits = pill.frame.width + 16 <= bounds.width && bounds.height >= 70
         let show = (hovering || peeking) && fits && pill.dotCount > 1
-        let showName = show && bounds.height >= 100
         let showClose = hovering && bounds.width >= 60 && bounds.height >= 50
+        if !show { showLabel(at: nil) }
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             pill.animator().alphaValue = show ? 1 : 0
-            nameBubble.animator().alphaValue = showName ? 1 : 0
             closeButton.animator().alphaValue = showClose ? 1 : 0
         }
     }
@@ -391,9 +474,11 @@ final class FilterRootView: NSView {
         let token = peekToken
         peeking = true
         updatePillVisibility()
+        showLabel(at: pill.activeIndex)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
             guard let self, self.peekToken == token else { return }
             self.peeking = false
+            self.showLabel(at: nil)
             self.updatePillVisibility()
         }
     }
@@ -444,10 +529,53 @@ final class FilterRootView: NSView {
 final class CloseButton: NSView {
     static let size: CGFloat = 20
     var onClick: (() -> Void)?
-    private var hovered = false { didSet { needsDisplay = true } }
-    private var pressed = false { didSet { needsDisplay = true } }
+
+    private let background = CALayer()
+    private let glyph = CAShapeLayer()
+    private var hovered = false { didSet { updateLook() } }
+    private var pressed = false { didSet { updateLook() } }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        // Mid-gray reads on both dark and light content.
+        background.backgroundColor = NSColor(white: 0.5, alpha: 0.75).cgColor
+        background.opacity = 0
+        layer?.addSublayer(background)
+        glyph.strokeColor = NSColor.white.cgColor
+        glyph.fillColor = nil
+        glyph.lineWidth = 1.6
+        glyph.lineCap = .round
+        layer?.addSublayer(glyph)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
 
     override var mouseDownCanMoveWindow: Bool { false }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        background.frame = bounds
+        background.cornerRadius = bounds.width / 2
+        glyph.frame = bounds
+        let inset: CGFloat = 6.5
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: inset, y: inset))
+        path.addLine(to: CGPoint(x: bounds.width - inset, y: bounds.height - inset))
+        path.move(to: CGPoint(x: inset, y: bounds.height - inset))
+        path.addLine(to: CGPoint(x: bounds.width - inset, y: inset))
+        glyph.path = path
+        CATransaction.commit()
+    }
+
+    private func updateLook() {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.15)
+        background.opacity = pressed ? 1 : (hovered ? 0.85 : 0)
+        CATransaction.commit()
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -457,7 +585,7 @@ final class CloseButton: NSView {
                                        owner: self, userInfo: nil))
     }
 
-    override func mouseEntered(with event: NSEvent) { hovered = true; NSCursor.arrow.set() }
+    override func mouseEntered(with event: NSEvent) { hovered = true; NSCursor.pointingHand.set() }
     override func mouseExited(with event: NSEvent) { hovered = false; pressed = false }
     override func mouseDown(with event: NSEvent) { pressed = true }
     override func mouseDragged(with event: NSEvent) {
@@ -468,20 +596,104 @@ final class CloseButton: NSView {
         pressed = false
         if inside { onClick?() }
     }
+}
 
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor(white: 0, alpha: pressed ? 0.65 : (hovered ? 0.55 : 0.42)).setFill()
-        NSBezierPath(ovalIn: bounds).fill()
-        let inset: CGFloat = 6.5
-        let path = NSBezierPath()
-        path.move(to: NSPoint(x: inset, y: inset))
-        path.line(to: NSPoint(x: bounds.width - inset, y: bounds.height - inset))
-        path.move(to: NSPoint(x: inset, y: bounds.height - inset))
-        path.line(to: NSPoint(x: bounds.width - inset, y: inset))
-        path.lineWidth = 1.6
-        path.lineCapStyle = .round
-        NSColor(white: 1, alpha: hovered ? 1 : 0.85).setStroke()
-        path.stroke()
+// MARK: - Resize grip hint
+
+/// Dotted marks that fade in over whichever resize zone the cursor is on:
+/// a dotted line along an edge, a small triangle of dots in a corner.
+final class ResizeGripView: NSView {
+    private let edgeDots = CAShapeLayer()
+    private let cornerDots = CAShapeLayer()
+    private(set) var edges: ResizeEdges = []
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        for l in [edgeDots, cornerDots] {
+            l.opacity = 0
+            l.shadowColor = NSColor.black.cgColor
+            l.shadowOpacity = 0
+            l.shadowRadius = 1.5
+            l.shadowOffset = .zero
+            layer?.addSublayer(l)
+        }
+        edgeDots.fillColor = NSColor(white: 1, alpha: 0.3).cgColor
+        cornerDots.fillColor = NSColor(white: 1, alpha: 0.3).cgColor
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func show(_ new: ResizeEdges) {
+        guard new != edges else { return }
+        edges = new
+        rebuildPaths()
+        let isCorner = new.rawValue.nonzeroBitCount == 2
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.15)
+        edgeDots.opacity = !new.isEmpty && !isCorner ? 1 : 0
+        cornerDots.opacity = isCorner ? 1 : 0
+        CATransaction.commit()
+    }
+
+    override func layout() {
+        super.layout()
+        rebuildPaths()
+    }
+
+    // Autoresizing during a live resize doesn't always trigger layout().
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        rebuildPaths()
+    }
+
+    private func rebuildPaths() {
+        guard !edges.isEmpty else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let w = bounds.width, h = bounds.height
+        let inset: CGFloat = 4 // corner dots' margin from the edges
+        let span = FilterPanel.cornerZone
+
+        if edges.rawValue.nonzeroBitCount == 2 {
+            // Corner: a 3-2-1 triangle of dots tucked into the corner.
+            let path = CGMutablePath()
+            let step: CGFloat = 4.5, r: CGFloat = 1.1
+            let sx: CGFloat = edges.contains(.left) ? 1 : -1
+            let sy: CGFloat = edges.contains(.bottom) ? 1 : -1
+            let ox = edges.contains(.left) ? inset : w - inset
+            let oy = edges.contains(.bottom) ? inset : h - inset
+            for i in 0..<3 {
+                for j in 0..<(3 - i) {
+                    let c = CGPoint(x: ox + sx * CGFloat(i) * step, y: oy + sy * CGFloat(j) * step)
+                    path.addEllipse(in: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
+                }
+            }
+            cornerDots.path = path
+        } else {
+            // Edge: two staggered rows of small dots running along the edge.
+            let path = CGMutablePath()
+            let step: CGFloat = 4.5, r: CGFloat = 0.7, gap: CGFloat = 1.6
+            let vertical = edges.contains(.left) || edges.contains(.right)
+            let length = (vertical ? h : w) - span * 2
+            // Edge-to-outer-row equals row-to-row (2 * gap), so the rows sit
+            // at 2g and 4g from the edge.
+            let center = vertical ? (edges.contains(.left) ? 3 * gap : w - 3 * gap)
+                                  : (edges.contains(.bottom) ? 3 * gap : h - 3 * gap)
+            for (row, offset) in [(0, -gap), (1, gap)] {
+                var t = CGFloat(row) * step / 2
+                while t <= length {
+                    let along = span + t, across = center + offset
+                    let c = vertical ? CGPoint(x: across, y: along) : CGPoint(x: along, y: across)
+                    path.addEllipse(in: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
+                    t += step
+                }
+            }
+            edgeDots.path = path
+        }
     }
 }
 
@@ -489,7 +701,7 @@ final class CloseButton: NSView {
 
 /// Compact in-window preset switcher: just the dots, so its width depends only
 /// on how many presets exist (capped at Preset.maxCount) and the dots never
-/// shift around. The preset name lives in a separate bubble above it.
+/// shift around. The preset name is a separate label above the hovered dot.
 final class PresetPill: NSView {
     var onSelect: ((Int) -> Void)?
     /// Index of the dot under the cursor, or nil when the cursor leaves the dots.
@@ -498,16 +710,15 @@ final class PresetPill: NSView {
 
     private var dots: [PresetDot] = []
 
-    private let dotWidth: CGFloat = 22
+    private let dotWidth: CGFloat = 18
     private let height: CGFloat = 30
-    private let pad: CGFloat = 6
+    private let pad: CGFloat = 2
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor(white: 0, alpha: 0.42).cgColor
-        layer?.cornerRadius = height / 2
-    }
+    /// Center x of dot `i`, in this view's coordinates.
+    func dotCenterX(_ i: Int) -> CGFloat { pad + (CGFloat(i) + 0.5) * dotWidth }
+    private(set) var activeIndex = 0
+
+    override init(frame: NSRect) { super.init(frame: frame) }
 
     required init?(coder: NSCoder) { fatalError() }
 
@@ -527,8 +738,9 @@ final class PresetPill: NSView {
             needsLayout = true
         }
         dotCount = presets.count
-        for (d, p) in zip(dots, presets) {
+        for (i, (d, p)) in zip(dots, presets).enumerated() {
             d.isActive = p.id == activeID
+            if d.isActive { activeIndex = i }
         }
     }
 
@@ -562,7 +774,11 @@ private final class PresetDot: NSView {
                                        owner: self, userInfo: nil))
     }
 
-    override func mouseEntered(with event: NSEvent) { hovered = true; onHover?(true) }
+    override func mouseEntered(with event: NSEvent) {
+        hovered = true
+        NSCursor.pointingHand.set()
+        onHover?(true)
+    }
     override func mouseExited(with event: NSEvent) { hovered = false; onHover?(false) }
     override func mouseDown(with event: NSEvent) { onClick?() }
 
@@ -613,7 +829,10 @@ final class FilterController: NSObject, NSWindowDelegate {
         root.closeButton.onClick = { [weak self] in self?.dismiss() }
         panel.onTrackingEnded = { [weak self] in self?.root.syncHover() }
         root.pill.onSelect = { [weak self] i in self?.selectPreset(at: i) }
-        root.pill.onHover = { [weak self] i in self?.preview(at: i) }
+        root.pill.onHover = { [weak self] i in
+            self?.preview(at: i)
+            self?.root.showLabel(at: i)
+        }
 
         let store = Store.shared
         store.$presets
@@ -629,7 +848,10 @@ final class FilterController: NSObject, NSWindowDelegate {
     func show() {
         apply()
         panel.alphaValue = 0
+        // Key on arrival (Esc, Tab, 1–5 work immediately) without activating
+        // the app — it's a non-activating panel, like Spotlight.
         panel.orderFrontRegardless()
+        panel.makeKey()
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.14
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -704,7 +926,7 @@ final class FilterController: NSObject, NSWindowDelegate {
         root.tint.layer?.backgroundColor = p.tint.nsColor.withAlphaComponent(CGFloat(p.tintOpacity)).cgColor
 
         root.pill.update(presets: store.presets, activeID: active.id)
-        root.setName(p.name.isEmpty ? "Untitled" : p.name)
+        root.setLabelNames(store.presets.map(\.name))
         root.layoutPill()
     }
 

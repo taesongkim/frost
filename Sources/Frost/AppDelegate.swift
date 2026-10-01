@@ -16,7 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         BackgroundCursor.enable()
         setUpStatusItem()
 
-        HotKey.shared.handler = { [weak self] in self?.newFilter() }
+        HotKey.shared.handler = { [weak self] in self?.toggleFilter() }
         Store.shared.$hotKey
             .sink { [weak self] combo in
                 HotKey.shared.register(combo)
@@ -82,6 +82,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     // MARK: Filters
 
     @objc private func newFilterFromMenu() { newFilter() }
+
+    /// The global shortcut: closes the focused filter if there is one,
+    /// otherwise opens a new one.
+    func toggleFilter() {
+        if let focused = filters.first(where: { $0.panel.isKeyWindow }) {
+            focused.dismiss()
+        } else {
+            newFilter()
+        }
+    }
 
     func newFilter() {
         let mouse = NSEvent.mouseLocation
