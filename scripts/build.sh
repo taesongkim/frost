@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${VERSION:-0.1.0}"
+VERSION="${VERSION:-0.1.1}"
 BUILD="${BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 SIGNING_IDENTITY="${SIGNING_IDENTITY:-Developer ID Application: Taesong Kim (SPJZZKVU87)}"
 ENV_FILE="${FROST_NOTARIZE_ENV:-$HOME/DevProjects2/vimyasa support/notarize.env}"
