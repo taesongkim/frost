@@ -26,8 +26,8 @@ final class Store: ObservableObject {
 
     private let defaults = UserDefaults.standard
     private enum Keys {
-        static let presets = "presets.v1"
-        static let defaultID = "defaultPresetID.v1"
+        static let presets = "presets.v2"
+        static let defaultID = "defaultPresetID.v2"
         static let hotKey = "hotKey.v1"
     }
 

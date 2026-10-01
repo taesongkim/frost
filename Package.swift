@@ -10,7 +10,6 @@ let package = Package(
             path: "Sources/Frost",
             linkerSettings: [
                 .linkedFramework("Carbon"),
-                .linkedFramework("ScreenCaptureKit"),
             ]
         ),
     ]

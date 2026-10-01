@@ -6,14 +6,14 @@ Press **⇧⌘/** and a filter window appears in the middle of the screen your c
 
 ## Presets
 
-You get up to five presets. Each one sets:
+You get up to five presets, starting with Cover and Focus. Each one sets:
 
-- **Material** and **Appearance**: which macOS frosted material to use, in light, dark, or auto.
-- **Frost**: how strong the frosted layer is (0% is clear glass).
+- **Blur**: a Gaussian blur radius from 0 (clear) to 80.
 - **Tint**: a color wash with its own opacity. Good for dimming a distraction.
-- **Pixelate**: a mosaic of what's underneath, blended over the frost, with an adjustable block size. This needs Screen Recording permission, and it trails slightly behind while you drag.
 
-Hover over a filter to switch presets from the dots at the bottom, or click it and press 1–5.
+Hover over a filter to switch presets with the dots at the bottom (hovering a dot previews it), or click the filter and press Tab, Shift-Tab, or 1–5.
+
+The variable blur uses a private WindowServer call (`CGSSetWindowBackgroundBlurRadius`). That's why Frost can never be on the App Store, and it could break in a future macOS. If it does, the blur just won't show up; the app won't crash.
 
 ## Scripting
 

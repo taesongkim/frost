@@ -7,7 +7,6 @@ struct SettingsView: View {
     @State private var selectedID: UUID?
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
-    @State private var screenGranted = ScreenPermission.granted
 
     private var selectedIndex: Int? {
         let id = selectedID ?? store.defaultID
@@ -40,27 +39,14 @@ struct SettingsView: View {
                         .font(.caption)
                 }
             } footer: {
-                Text("New filters open with the default preset. Hover a filter to switch presets, or press 1–\(Preset.maxCount) after clicking it.")
+                Text("New filters open with the default preset. Hover a filter to switch presets, or click it and press Tab or 1–\(Preset.maxCount).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            if store.presets.contains(where: \.usesPixelate) && !screenGranted {
-                Section {
-                    HStack {
-                        Text("Pixelate needs Screen Recording permission. After allowing it, quit and reopen Frost.")
-                            .font(.callout)
-                        Spacer()
-                        Button("Open Settings") { ScreenPermission.openSettings() }
-                    }
-                }
-            }
         }
         .formStyle(.grouped)
         .frame(minWidth: 520, minHeight: 600)
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            screenGranted = ScreenPermission.granted
-        }
     }
 
     private var presetPicker: some View {
@@ -128,15 +114,8 @@ private struct PresetEditor: View {
     var body: some View {
         TextField("Name", text: $preset.name)
 
-        Picker("Material", selection: $preset.material) {
-            ForEach(FrostMaterial.allCases) { Text($0.label).tag($0) }
-        }
-        Picker("Appearance", selection: $preset.appearance) {
-            ForEach(FrostAppearance.allCases) { Text($0.label).tag($0) }
-        }
-        .pickerStyle(.segmented)
-
-        SliderRow(title: "Frost", value: $preset.blur, range: 0...1, format: percent)
+        SliderRow(title: "Blur", value: $preset.blur, range: 0...Preset.maxBlur, step: 1,
+                  format: { "\(Int($0))" })
 
         LabeledContent("Tint") {
             HStack {
@@ -145,11 +124,6 @@ private struct PresetEditor: View {
                 ColorPicker("", selection: tintBinding, supportsOpacity: false).labelsHidden()
             }
         }
-
-        SliderRow(title: "Pixelate", value: $preset.pixelMix, range: 0...1, format: percent)
-        SliderRow(title: "Block size", value: $preset.pixelSize, range: 4...64, step: 1,
-                  format: { "\(Int($0)) pt" })
-            .disabled(!preset.usesPixelate)
     }
 
     private var tintBinding: Binding<Color> {

@@ -13,6 +13,8 @@ final class FilterPanel: NSPanel {
     var onDoubleClick: (() -> Void)?
     var onDismissKey: (() -> Void)?
     var onNumberKey: ((Int) -> Void)?
+    /// Tab (+1) / Shift-Tab (-1).
+    var onCycleKey: ((Int) -> Void)?
     /// Points (in window coords) that belong to interactive controls, not the pane.
     var isControlHit: ((NSPoint) -> Bool)?
 
@@ -68,6 +70,10 @@ final class FilterPanel: NSPanel {
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { onDismissKey?(); return } // Esc
+        if event.keyCode == 48 { // Tab
+            onCycleKey?(event.modifierFlags.contains(.shift) ? -1 : 1)
+            return
+        }
         if let c = event.charactersIgnoringModifiers, let n = Int(c), (1...Preset.maxCount).contains(n),
            event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
             onNumberKey?(n - 1)
@@ -87,10 +93,6 @@ final class FilterPanel: NSPanel {
 }
 
 // MARK: - Views
-
-private final class DragThroughEffectView: NSVisualEffectView {
-    override var mouseDownCanMoveWindow: Bool { true }
-}
 
 private final class DragThroughView: NSView {
     override var mouseDownCanMoveWindow: Bool { true }
@@ -146,8 +148,6 @@ final class Bubble: NSView {
 }
 
 final class FilterRootView: NSView {
-    fileprivate let effect = DragThroughEffectView()
-    fileprivate let pixel = DragThroughView()
     fileprivate let tint = DragThroughView()
     fileprivate let flashView = DragThroughView()
     let pill = PresetPill()
@@ -155,7 +155,9 @@ final class FilterRootView: NSView {
     let hint = Bubble(fontSize: 13, padX: 14, padY: 8, radius: 10)
 
     private var hovering = false
-    private var pixelGrid: PixelGrid?
+    /// Keeps the switcher up briefly after a keyboard preset change.
+    private var peeking = false
+    private var peekToken = 0
     private var hintToken = 0
 
     override init(frame: NSRect) {
@@ -166,27 +168,17 @@ final class FilterRootView: NSView {
         // instead of letting them fall through to the window underneath.
         layer?.backgroundColor = NSColor(white: 1, alpha: 0.012).cgColor
 
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.material = .hudWindow
-
-        pixel.wantsLayer = true
-        pixel.layer?.magnificationFilter = .nearest
-        pixel.layer?.contentsGravity = .resize
-
         tint.wantsLayer = true
 
         flashView.wantsLayer = true
         flashView.layer?.backgroundColor = NSColor.white.cgColor
         flashView.layer?.opacity = 0
 
-        for v in [effect, pixel, tint, flashView] {
+        for v in [tint, flashView] {
             v.frame = bounds
             v.autoresizingMask = [.width, .height]
             addSubview(v)
         }
-        // The pixel grid is sized explicitly and pinned to the top-left.
-        pixel.autoresizingMask = [.minYMargin]
 
         pill.alphaValue = 0
         nameBubble.alphaValue = 0
@@ -217,7 +209,6 @@ final class FilterRootView: NSView {
         super.layout()
         layoutPill()
         layoutHint()
-        layoutPixel()
     }
 
     // MARK: Pill + name
@@ -243,12 +234,25 @@ final class FilterRootView: NSView {
 
     func updatePillVisibility() {
         let fits = pill.frame.width + 16 <= bounds.width && bounds.height >= 70
-        let show = hovering && fits && pill.dotCount > 1
+        let show = (hovering || peeking) && fits && pill.dotCount > 1
         let showName = show && bounds.height >= 100
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             pill.animator().alphaValue = show ? 1 : 0
             nameBubble.animator().alphaValue = showName ? 1 : 0
+        }
+    }
+
+    /// Briefly shows the dots + name after switching presets from the keyboard.
+    func peek() {
+        peekToken += 1
+        let token = peekToken
+        peeking = true
+        updatePillVisibility()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            guard let self, self.peekToken == token else { return }
+            self.peeking = false
+            self.updatePillVisibility()
         }
     }
 
@@ -283,25 +287,6 @@ final class FilterRootView: NSView {
         }
     }
 
-    // MARK: Pixel layer
-
-    fileprivate func showPixels(_ image: CGImage, grid: PixelGrid) {
-        pixelGrid = grid
-        pixel.layer?.contents = image
-        layoutPixel()
-    }
-
-    fileprivate func clearPixels() {
-        pixelGrid = nil
-        pixel.layer?.contents = nil
-    }
-
-    private func layoutPixel() {
-        guard let g = pixelGrid else { pixel.frame = bounds; return }
-        let w = CGFloat(g.cols) * g.block, h = CGFloat(g.rows) * g.block
-        pixel.frame = NSRect(x: 0, y: bounds.height - h, width: w, height: h)
-    }
-
     func flash() {
         let a = CABasicAnimation(keyPath: "opacity")
         a.fromValue = 0.22
@@ -325,9 +310,9 @@ final class PresetPill: NSView {
 
     private var dots: [PresetDot] = []
 
-    private let dotWidth: CGFloat = 26
-    private let height: CGFloat = 26
-    private let pad: CGFloat = 4
+    private let dotWidth: CGFloat = 22
+    private let height: CGFloat = 30
+    private let pad: CGFloat = 6
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -394,7 +379,7 @@ private final class PresetDot: NSView {
     override func mouseDown(with event: NSEvent) { onClick?() }
 
     override func draw(_ dirtyRect: NSRect) {
-        let d: CGFloat = hovered ? 12 : 10
+        let d: CGFloat = hovered ? 15 : 13
         let r = NSRect(x: (bounds.width - d) / 2, y: (bounds.height - d) / 2, width: d, height: d)
         let path = NSBezierPath(ovalIn: r)
         NSColor(white: 1, alpha: isActive ? 1 : (hovered ? 0.75 : 0.4)).setFill()
@@ -407,7 +392,6 @@ private final class PresetDot: NSView {
 final class FilterController: NSObject, NSWindowDelegate {
     let panel: FilterPanel
     private let root: FilterRootView
-    private var capture: PixelCapture!
     private(set) var presetID: UUID
     /// Preset shown while hovering a dot; nil when not previewing.
     private var previewID: UUID?
@@ -425,15 +409,13 @@ final class FilterController: NSObject, NSWindowDelegate {
 
         panel.contentView = root
         panel.delegate = self
-        capture = PixelCapture(window: panel) { [weak self] image, grid in
-            self?.root.showPixels(image, grid: grid)
-        }
 
         panel.onClick = { [weak self] in self?.root.flash() }
         panel.onPlainClick = { [weak self] in self?.root.showHint() }
         panel.onDoubleClick = { [weak self] in self?.dismiss() }
         panel.onDismissKey = { [weak self] in self?.dismiss() }
-        panel.onNumberKey = { [weak self] i in self?.selectPreset(at: i) }
+        panel.onNumberKey = { [weak self] i in self?.selectPreset(at: i, peek: true) }
+        panel.onCycleKey = { [weak self] step in self?.cyclePreset(step) }
         panel.isControlHit = { [weak self] point in
             guard let pill = self?.root.pill, pill.alphaValue > 0.01 else { return false }
             return pill.bounds.contains(pill.convert(point, from: nil))
@@ -466,7 +448,6 @@ final class FilterController: NSObject, NSWindowDelegate {
     func dismiss(animated: Bool = true) {
         guard !closing else { return }
         closing = true
-        capture.stop()
         cancellables.removeAll()
         let finish = { [self] in
             panel.orderOut(nil)
@@ -481,16 +462,24 @@ final class FilterController: NSObject, NSWindowDelegate {
         }, completionHandler: finish)
     }
 
-    private func selectPreset(at index: Int) {
+    private func selectPreset(at index: Int, peek: Bool = false) {
         let presets = Store.shared.presets
         guard presets.indices.contains(index) else { return }
         presetID = presets[index].id
         apply()
+        if peek { root.peek() }
+    }
+
+    private func cyclePreset(_ step: Int) {
+        let presets = Store.shared.presets
+        guard presets.count > 1 else { return }
+        let current = presets.firstIndex { $0.id == presetID } ?? 0
+        selectPreset(at: (current + step + presets.count) % presets.count, peek: true)
     }
 
     /// Hovering a dot previews that preset; leaving the dots reverts. The revert
     /// is deferred a beat so sliding from one dot to the next doesn't bounce
-    /// through the active preset (and restart the capture) in between.
+    /// through the active preset in between.
     private func preview(at index: Int?) {
         previewRevert?.cancel()
         previewRevert = nil
@@ -518,30 +507,12 @@ final class FilterController: NSObject, NSWindowDelegate {
         let active = store.preset(presetID)
         let p = previewID.map { store.preset($0) } ?? active
 
-        panel.appearance = p.appearance.nsAppearance
-        root.effect.material = p.material.material
-        root.effect.alphaValue = CGFloat(p.blur)
+        WindowBlur.set(panel, radius: p.blur)
         root.tint.layer?.backgroundColor = p.tint.nsColor.withAlphaComponent(CGFloat(p.tintOpacity)).cgColor
-
-        if p.usesPixelate {
-            ScreenPermission.requestIfNeeded()
-            root.pixel.alphaValue = CGFloat(p.pixelMix)
-            capture.pixelSize = CGFloat(p.pixelSize)
-            if !capture.isRunning { capture.start() }
-        } else {
-            capture.stop()
-            root.pixel.alphaValue = 0
-            root.clearPixels()
-        }
 
         root.pill.update(presets: store.presets, activeID: active.id)
         root.setName(p.name.isEmpty ? "Untitled" : p.name)
         root.layoutPill()
     }
 
-    // MARK: NSWindowDelegate
-
-    func windowDidMove(_ notification: Notification) { capture.updateGeometry() }
-    func windowDidResize(_ notification: Notification) { capture.updateGeometry() }
-    func windowDidChangeScreen(_ notification: Notification) { capture.updateGeometry() }
 }
