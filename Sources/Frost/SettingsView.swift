@@ -244,6 +244,7 @@ private struct SelectAllTextField: NSViewRepresentable {
         field.lineBreakMode = .byTruncatingTail
         field.usesSingleLineMode = true
         field.placeholderString = "Name"
+        field.focusRingType = .none
         field.delegate = context.coordinator
         return field
     }
@@ -261,6 +262,14 @@ private struct SelectAllTextField: NSViewRepresentable {
         func controlTextDidChange(_ note: Notification) {
             if let field = note.object as? NSTextField { text.wrappedValue = field.stringValue }
         }
+
+        // Return and Esc finish editing instead of leaving the field active.
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.insertNewline(_:))
+                    || selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+            control.window?.makeFirstResponder(nil)
+            return true
+        }
     }
 }
 
@@ -271,14 +280,44 @@ final class SelectAllNSTextField: NSTextField {
     /// focus from making a later click select everything.
     private var justFocused = false
 
+    /// Clicks elsewhere in the window don't take focus from a text field on
+    /// their own (Form rows aren't focusable), so watch for them while editing.
+    private var clickOutMonitor: Any?
+
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
         if ok {
             justFocused = true
             DispatchQueue.main.async { [weak self] in self?.justFocused = false }
+            installClickOutMonitor()
         }
         return ok
     }
+
+    override func textDidEndEditing(_ notification: Notification) {
+        super.textDidEndEditing(notification)
+        removeClickOutMonitor()
+    }
+
+    private func installClickOutMonitor() {
+        removeClickOutMonitor()
+        clickOutMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self, let window = self.window, event.window === window else { return event }
+            let p = self.convert(event.locationInWindow, from: nil)
+            if !self.bounds.contains(p) {
+                window.makeFirstResponder(nil)
+                self.removeClickOutMonitor()
+            }
+            return event
+        }
+    }
+
+    private func removeClickOutMonitor() {
+        if let m = clickOutMonitor { NSEvent.removeMonitor(m) }
+        clickOutMonitor = nil
+    }
+
+    deinit { removeClickOutMonitor() }
 
     override func mouseDown(with event: NSEvent) {
         let selectAll = justFocused
