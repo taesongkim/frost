@@ -328,7 +328,11 @@ final class FilterRootView: NSView {
         guard let panel = window as? FilterPanel else { return }
         let overButton = closeButton.alphaValue > 0.01 && closeButton.frame.contains(convert(p, from: nil))
         let edges = overButton ? [] : panel.resizeEdges(at: p)
-        (edges.isEmpty ? NSCursor.arrow : FilterPanel.cursor(for: edges)).set()
+        if overButton {
+            NSCursor.pointingHand.set()
+        } else {
+            (edges.isEmpty ? NSCursor.arrow : FilterPanel.cursor(for: edges)).set()
+        }
         grip.show(edges)
     }
 
@@ -520,7 +524,7 @@ final class CloseButton: NSView {
                                        owner: self, userInfo: nil))
     }
 
-    override func mouseEntered(with event: NSEvent) { hovered = true; NSCursor.arrow.set() }
+    override func mouseEntered(with event: NSEvent) { hovered = true; NSCursor.pointingHand.set() }
     override func mouseExited(with event: NSEvent) { hovered = false; pressed = false }
     override func mouseDown(with event: NSEvent) { pressed = true }
     override func mouseDragged(with event: NSEvent) {
@@ -553,8 +557,8 @@ final class ResizeGripView: NSView {
             l.shadowOffset = .zero
             layer?.addSublayer(l)
         }
-        edgeDots.fillColor = NSColor(white: 1, alpha: 0.07).cgColor
-        cornerDots.fillColor = NSColor(white: 1, alpha: 0.07).cgColor
+        edgeDots.fillColor = NSColor(white: 1, alpha: 0.2).cgColor
+        cornerDots.fillColor = NSColor(white: 1, alpha: 0.2).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError() }
