@@ -8,6 +8,8 @@ import Combine
 /// summoning it never steals focus from what you're typing in.
 final class FilterPanel: NSPanel {
     var onClick: (() -> Void)?
+    /// A click that didn't turn into a drag or resize.
+    var onPlainClick: (() -> Void)?
     var onDoubleClick: (() -> Void)?
     var onDismissKey: (() -> Void)?
     var onNumberKey: ((Int) -> Void)?
@@ -43,13 +45,23 @@ final class FilterPanel: NSPanel {
     // Let it go anywhere, including over the menu bar.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 
+    private var mouseDownFrame: NSRect?
+
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .leftMouseDown, !(isControlHit?(event.locationInWindow) ?? false) {
+        switch event.type {
+        case .leftMouseDown where !(isControlHit?(event.locationInWindow) ?? false):
             if event.clickCount >= 2 {
+                mouseDownFrame = nil
                 onDoubleClick?()
                 return
             }
+            mouseDownFrame = frame
             onClick?()
+        case .leftMouseUp:
+            if let start = mouseDownFrame, start == frame, event.clickCount == 1 { onPlainClick?() }
+            mouseDownFrame = nil
+        default:
+            break
         }
         super.sendEvent(event)
     }
@@ -84,18 +96,72 @@ private final class DragThroughView: NSView {
     override var mouseDownCanMoveWindow: Bool { true }
 }
 
+/// Small dark capsule with a single line (or wrapped lines) of white text. Clicks
+/// pass to the window as if it weren't there, so it can still be dragged by it.
+final class Bubble: NSView {
+    private let label = NSTextField(wrappingLabelWithString: "")
+    private let padX: CGFloat, padY: CGFloat
+
+    init(fontSize: CGFloat, padX: CGFloat, padY: CGFloat, radius: CGFloat?) {
+        self.padX = padX
+        self.padY = padY
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(white: 0, alpha: 0.5).cgColor
+        label.font = .systemFont(ofSize: fontSize, weight: .medium)
+        label.textColor = NSColor(white: 1, alpha: 0.95)
+        label.alignment = .center
+        label.isSelectable = false
+        label.drawsBackground = false
+        label.lineBreakMode = .byTruncatingTail
+        addSubview(label)
+        self.radius = radius
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private var radius: CGFloat?
+    var text: String {
+        get { label.stringValue }
+        set { label.stringValue = newValue }
+    }
+    var maxLines = 1 { didSet { label.maximumNumberOfLines = maxLines } }
+
+    override var mouseDownCanMoveWindow: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    /// Sizes to fit the text, never wider than `maxWidth`.
+    func fit(maxWidth: CGFloat) -> NSSize {
+        label.maximumNumberOfLines = maxLines
+        label.preferredMaxLayoutWidth = max(10, maxWidth - padX * 2)
+        let natural = label.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: CGFloat.greatestFiniteMagnitude, height: 1000))
+        let textW = min(ceil(natural.width), maxWidth - padX * 2)
+        let textH = ceil(label.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: textW, height: 1000)).height)
+        let lines = maxLines == 1 ? ceil(natural.height) : textH
+        let size = NSSize(width: textW + padX * 2, height: lines + padY * 2)
+        label.frame = NSRect(x: padX, y: padY, width: textW, height: lines)
+        layer?.cornerRadius = radius ?? size.height / 2
+        return size
+    }
+}
+
 final class FilterRootView: NSView {
     fileprivate let effect = DragThroughEffectView()
     fileprivate let pixel = DragThroughView()
     fileprivate let tint = DragThroughView()
     fileprivate let flashView = DragThroughView()
     let pill = PresetPill()
+    let nameBubble = Bubble(fontSize: 11, padX: 9, padY: 3, radius: nil)
+    let hint = Bubble(fontSize: 13, padX: 14, padY: 8, radius: 10)
 
     private var hovering = false
+    private var pixelGrid: PixelGrid?
+    private var hintToken = 0
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
+        clipsToBounds = true
         // A hair of opacity so a fully clear preset still catches clicks
         // instead of letting them fall through to the window underneath.
         layer?.backgroundColor = NSColor(white: 1, alpha: 0.012).cgColor
@@ -119,8 +185,17 @@ final class FilterRootView: NSView {
             v.autoresizingMask = [.width, .height]
             addSubview(v)
         }
+        // The pixel grid is sized explicitly and pinned to the top-left.
+        pixel.autoresizingMask = [.minYMargin]
+
         pill.alphaValue = 0
+        nameBubble.alphaValue = 0
+        hint.alphaValue = 0
+        hint.maxLines = 3
+        hint.text = "To dismiss: Press ESC or double-click."
         addSubview(pill)
+        addSubview(nameBubble)
+        addSubview(hint)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -141,23 +216,90 @@ final class FilterRootView: NSView {
     override func layout() {
         super.layout()
         layoutPill()
+        layoutHint()
+        layoutPixel()
     }
 
+    // MARK: Pill + name
+
     func layoutPill() {
-        pill.compact = bounds.width < 200
         let size = pill.fittingSize
         pill.frame = NSRect(x: ((bounds.width - size.width) / 2).rounded(),
-                            y: 10, width: size.width, height: size.height)
+                            y: 8, width: size.width, height: size.height)
+        layoutName()
         updatePillVisibility()
     }
 
+    func setName(_ name: String) {
+        nameBubble.text = name
+        layoutName()
+    }
+
+    private func layoutName() {
+        let size = nameBubble.fit(maxWidth: max(40, bounds.width - 24))
+        nameBubble.frame = NSRect(x: ((bounds.width - size.width) / 2).rounded(),
+                                  y: pill.frame.maxY + 4, width: size.width, height: size.height)
+    }
+
     func updatePillVisibility() {
-        let fits = pill.frame.width + 16 <= bounds.width && bounds.height >= 56
+        let fits = pill.frame.width + 16 <= bounds.width && bounds.height >= 70
         let show = hovering && fits && pill.dotCount > 1
+        let showName = show && bounds.height >= 100
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             pill.animator().alphaValue = show ? 1 : 0
+            nameBubble.animator().alphaValue = showName ? 1 : 0
         }
+    }
+
+    // MARK: Hint
+
+    private func layoutHint() {
+        let size = hint.fit(maxWidth: max(60, min(320, bounds.width - 24)))
+        hint.frame = NSRect(x: ((bounds.width - size.width) / 2).rounded(),
+                            y: ((bounds.height - size.height) / 2).rounded(),
+                            width: size.width, height: size.height)
+    }
+
+    func showHint() {
+        hintToken += 1
+        let token = hintToken
+        layoutHint()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            hint.animator().alphaValue = 1
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard let self, self.hintToken == token else { return }
+            self.hideHint(duration: 0.4)
+        }
+    }
+
+    func hideHint(duration: TimeInterval = 0.15) {
+        hintToken += 1
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = duration
+            hint.animator().alphaValue = 0
+        }
+    }
+
+    // MARK: Pixel layer
+
+    fileprivate func showPixels(_ image: CGImage, grid: PixelGrid) {
+        pixelGrid = grid
+        pixel.layer?.contents = image
+        layoutPixel()
+    }
+
+    fileprivate func clearPixels() {
+        pixelGrid = nil
+        pixel.layer?.contents = nil
+    }
+
+    private func layoutPixel() {
+        guard let g = pixelGrid else { pixel.frame = bounds; return }
+        let w = CGFloat(g.cols) * g.block, h = CGFloat(g.rows) * g.block
+        pixel.frame = NSRect(x: 0, y: bounds.height - h, width: w, height: h)
     }
 
     func flash() {
@@ -172,31 +314,26 @@ final class FilterRootView: NSView {
 
 // MARK: - Preset pill
 
-/// Compact in-window preset switcher. Capped at Preset.maxCount dots so it can
-/// never overflow; the label collapses away on narrow windows.
+/// Compact in-window preset switcher: just the dots, so its width depends only
+/// on how many presets exist (capped at Preset.maxCount) and the dots never
+/// shift around. The preset name lives in a separate bubble above it.
 final class PresetPill: NSView {
     var onSelect: ((Int) -> Void)?
-    var compact = false { didSet { if oldValue != compact { needsLayout = true } } }
+    /// Index of the dot under the cursor, or nil when the cursor leaves the dots.
+    var onHover: ((Int?) -> Void)?
     private(set) var dotCount = 0
 
     private var dots: [PresetDot] = []
-    private let label = NSTextField(labelWithString: "")
-    private var activeName = ""
 
-    private let dotWidth: CGFloat = 16
-    private let height: CGFloat = 22
-    private let pad: CGFloat = 7
+    private let dotWidth: CGFloat = 26
+    private let height: CGFloat = 26
+    private let pad: CGFloat = 4
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         layer?.backgroundColor = NSColor(white: 0, alpha: 0.42).cgColor
         layer?.cornerRadius = height / 2
-        label.font = .systemFont(ofSize: 11, weight: .medium)
-        label.textColor = NSColor(white: 1, alpha: 0.92)
-        label.lineBreakMode = .byTruncatingTail
-        label.maximumNumberOfLines = 1
-        addSubview(label)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -210,49 +347,35 @@ final class PresetPill: NSView {
             dots = presets.indices.map { i in
                 let d = PresetDot()
                 d.onClick = { [weak self] in self?.onSelect?(i) }
-                d.onHover = { [weak self] name in self?.label.stringValue = name ?? self?.activeName ?? "" }
+                d.onHover = { [weak self] inside in self?.onHover?(inside ? i : nil) }
                 addSubview(d)
                 return d
             }
+            needsLayout = true
         }
         dotCount = presets.count
         for (d, p) in zip(dots, presets) {
-            d.name = p.name
             d.isActive = p.id == activeID
         }
-        activeName = presets.first { $0.id == activeID }?.name ?? ""
-        label.stringValue = activeName
-        needsLayout = true
-        superview?.needsLayout = true
-    }
-
-    private var labelWidth: CGFloat {
-        compact ? 0 : min(110, ceil(label.intrinsicContentSize.width))
     }
 
     override var fittingSize: NSSize {
-        let dotsW = CGFloat(dots.count) * dotWidth
-        let lw = labelWidth
-        return NSSize(width: pad + dotsW + (lw > 0 ? 4 + lw + pad + 2 : pad), height: height)
+        NSSize(width: pad * 2 + CGFloat(dots.count) * dotWidth, height: height)
     }
 
     override func layout() {
         super.layout()
-        var x = pad
-        for d in dots {
-            d.frame = NSRect(x: x, y: 0, width: dotWidth, height: height)
-            x += dotWidth
+        for (i, d) in dots.enumerated() {
+            d.frame = NSRect(x: pad + CGFloat(i) * dotWidth, y: 0, width: dotWidth, height: height)
         }
-        let lw = labelWidth
-        label.isHidden = lw == 0
-        label.frame = NSRect(x: x + 4, y: (height - 14) / 2, width: lw, height: 14)
     }
 }
 
 private final class PresetDot: NSView {
     var onClick: (() -> Void)?
-    var onHover: ((String?) -> Void)?
-    var name = ""
+    /// A click that didn't turn into a drag or resize.
+    var onPlainClick: (() -> Void)?
+    var onHover: ((Bool) -> Void)?
     var isActive = false { didSet { needsDisplay = true } }
     private var hovered = false { didSet { needsDisplay = true } }
 
@@ -266,21 +389,16 @@ private final class PresetDot: NSView {
                                        owner: self, userInfo: nil))
     }
 
-    override func mouseEntered(with event: NSEvent) { hovered = true; onHover?(name) }
-    override func mouseExited(with event: NSEvent) { hovered = false; onHover?(nil) }
+    override func mouseEntered(with event: NSEvent) { hovered = true; onHover?(true) }
+    override func mouseExited(with event: NSEvent) { hovered = false; onHover?(false) }
     override func mouseDown(with event: NSEvent) { onClick?() }
 
     override func draw(_ dirtyRect: NSRect) {
-        let d: CGFloat = 7
+        let d: CGFloat = hovered ? 12 : 10
         let r = NSRect(x: (bounds.width - d) / 2, y: (bounds.height - d) / 2, width: d, height: d)
         let path = NSBezierPath(ovalIn: r)
-        if isActive {
-            NSColor.white.setFill()
-            path.fill()
-        } else {
-            NSColor(white: 1, alpha: hovered ? 0.7 : 0.4).setFill()
-            path.fill()
-        }
+        NSColor(white: 1, alpha: isActive ? 1 : (hovered ? 0.75 : 0.4)).setFill()
+        path.fill()
     }
 }
 
@@ -291,6 +409,9 @@ final class FilterController: NSObject, NSWindowDelegate {
     private let root: FilterRootView
     private var capture: PixelCapture!
     private(set) var presetID: UUID
+    /// Preset shown while hovering a dot; nil when not previewing.
+    private var previewID: UUID?
+    private var previewRevert: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
     private var closing = false
     private let onClose: (FilterController) -> Void
@@ -304,11 +425,12 @@ final class FilterController: NSObject, NSWindowDelegate {
 
         panel.contentView = root
         panel.delegate = self
-        capture = PixelCapture(window: panel) { [weak self] image in
-            self?.root.pixel.layer?.contents = image
+        capture = PixelCapture(window: panel) { [weak self] image, grid in
+            self?.root.showPixels(image, grid: grid)
         }
 
         panel.onClick = { [weak self] in self?.root.flash() }
+        panel.onPlainClick = { [weak self] in self?.root.showHint() }
         panel.onDoubleClick = { [weak self] in self?.dismiss() }
         panel.onDismissKey = { [weak self] in self?.dismiss() }
         panel.onNumberKey = { [weak self] i in self?.selectPreset(at: i) }
@@ -317,6 +439,7 @@ final class FilterController: NSObject, NSWindowDelegate {
             return pill.bounds.contains(pill.convert(point, from: nil))
         }
         root.pill.onSelect = { [weak self] i in self?.selectPreset(at: i) }
+        root.pill.onHover = { [weak self] i in self?.preview(at: i) }
 
         let store = Store.shared
         store.$presets
@@ -365,12 +488,35 @@ final class FilterController: NSObject, NSWindowDelegate {
         apply()
     }
 
+    /// Hovering a dot previews that preset; leaving the dots reverts. The revert
+    /// is deferred a beat so sliding from one dot to the next doesn't bounce
+    /// through the active preset (and restart the capture) in between.
+    private func preview(at index: Int?) {
+        previewRevert?.cancel()
+        previewRevert = nil
+        if let index {
+            let presets = Store.shared.presets
+            guard presets.indices.contains(index) else { return }
+            previewID = presets[index].id
+            apply()
+        } else {
+            let work = DispatchWorkItem { [weak self] in
+                self?.previewID = nil
+                self?.apply()
+            }
+            previewRevert = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+        }
+    }
+
     private func apply() {
         guard !closing else { return }
         let store = Store.shared
         // A deleted preset falls back to the default.
         if !store.presets.contains(where: { $0.id == presetID }) { presetID = store.defaultID }
-        let p = store.preset(presetID)
+        if let id = previewID, !store.presets.contains(where: { $0.id == id }) { previewID = nil }
+        let active = store.preset(presetID)
+        let p = previewID.map { store.preset($0) } ?? active
 
         panel.appearance = p.appearance.nsAppearance
         root.effect.material = p.material.material
@@ -385,10 +531,11 @@ final class FilterController: NSObject, NSWindowDelegate {
         } else {
             capture.stop()
             root.pixel.alphaValue = 0
-            root.pixel.layer?.contents = nil
+            root.clearPixels()
         }
 
-        root.pill.update(presets: store.presets, activeID: p.id)
+        root.pill.update(presets: store.presets, activeID: active.id)
+        root.setName(p.name.isEmpty ? "Untitled" : p.name)
         root.layoutPill()
     }
 
