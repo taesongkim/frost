@@ -202,17 +202,19 @@ final class Bubble: NSView {
     private let label = NSTextField(wrappingLabelWithString: "")
     private let padX: CGFloat, padY: CGFloat
 
-    init(fontSize: CGFloat, padX: CGFloat, padY: CGFloat, radius: CGFloat?) {
+    init(fontSize: CGFloat, padX: CGFloat, padY: CGFloat, radius: CGFloat?, shadow: Bool = true) {
         self.padX = padX
         self.padY = padY
         super.init(frame: .zero)
         wantsLayer = true
-        // The shadow keeps white text readable over light content.
-        let glow = NSShadow()
-        glow.shadowColor = NSColor(white: 0, alpha: 0.55)
-        glow.shadowBlurRadius = 4
-        glow.shadowOffset = .zero
-        label.shadow = glow
+        if shadow {
+            // Keeps white text readable over light content.
+            let glow = NSShadow()
+            glow.shadowColor = NSColor(white: 0, alpha: 0.55)
+            glow.shadowBlurRadius = 4
+            glow.shadowOffset = .zero
+            label.shadow = glow
+        }
         label.font = .systemFont(ofSize: fontSize, weight: .semibold)
         label.textColor = NSColor(white: 1, alpha: 0.95)
         label.alignment = .center
@@ -256,7 +258,9 @@ final class FilterRootView: NSView {
     let pill = PresetPill()
     let closeButton = CloseButton()
     let grip = ResizeGripView()
-    let nameBubble = Bubble(fontSize: 11, padX: 9, padY: 3, radius: nil)
+    /// One name label per preset dot; each animates on its own.
+    private var dotLabels: [Bubble] = []
+    private var shownLabel: Int?
     let hint = Bubble(fontSize: 13, padX: 14, padY: 8, radius: 10)
 
     private var hovering = false
@@ -290,7 +294,6 @@ final class FilterRootView: NSView {
 
         pill.alphaValue = 0
         closeButton.alphaValue = 0
-        nameBubble.alphaValue = 0
         hint.alphaValue = 0
         hint.maxLines = 3
         hint.text = "To dismiss: Press ESC or double-click."
@@ -299,7 +302,6 @@ final class FilterRootView: NSView {
         addSubview(grip)
         addSubview(pill)
         addSubview(closeButton)
-        addSubview(nameBubble)
         addSubview(hint)
     }
 
@@ -318,6 +320,7 @@ final class FilterRootView: NSView {
     override func mouseEntered(with event: NSEvent) { hovering = true; updatePillVisibility() }
     override func mouseExited(with event: NSEvent) {
         hovering = false
+        showLabel(at: nil)
         updatePillVisibility()
         grip.show([])
         NSCursor.arrow.set()
@@ -377,68 +380,87 @@ final class FilterRootView: NSView {
         let size = pill.fittingSize
         pill.frame = NSRect(x: ((bounds.width - size.width) / 2).rounded(),
                             y: 8, width: size.width, height: size.height)
-        layoutName()
+        layoutLabels()
         updatePillVisibility()
     }
 
-    func setName(_ name: String) {
-        nameBubble.text = name
-        layoutName()
-    }
-
-    /// Dot the name label sits over; nil when hidden.
-    private var labelIndex: Int?
-    private var labelToken = 0
-    private static let labelRise: CGFloat = 4
-
-    /// Shows the name label over dot `index` — fading in while sliding up a
-    /// few points — or hides it for nil. Hiding waits a beat so sliding from
-    /// one dot to the next doesn't flash it out and back.
-    func showLabel(at index: Int?) {
-        labelToken += 1
-        let token = labelToken
-        guard let index, bounds.height >= 100, pill.dotCount > 1 else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-                guard let self, self.labelToken == token else { return }
-                self.labelIndex = nil
-                NSAnimationContext.runAnimationGroup { ctx in
-                    ctx.duration = 0.12
-                    self.nameBubble.animator().alphaValue = 0
-                }
+    /// Keeps one label per dot, texts matching the preset names.
+    func setLabelNames(_ names: [String]) {
+        if dotLabels.count != names.count {
+            dotLabels.forEach { $0.removeFromSuperview() }
+            dotLabels = names.map { _ in
+                let l = Bubble(fontSize: 11, padX: 4, padY: 2, radius: nil, shadow: false)
+                l.layer?.opacity = 0
+                addSubview(l)
+                return l
             }
-            return
+            shownLabel = nil
         }
-        labelIndex = index
-        let target = labelFrame()
-        nameBubble.alphaValue = 0
-        nameBubble.frame = target.offsetBy(dx: 0, dy: -Self.labelRise)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.16
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            nameBubble.animator().alphaValue = 1
-            nameBubble.animator().frame = target
+        for (l, n) in zip(dotLabels, names) { l.text = n.isEmpty ? "Untitled" : n }
+        layoutLabels()
+    }
+
+    private func layoutLabels() {
+        for (i, l) in dotLabels.enumerated() {
+            let size = l.fit(maxWidth: max(40, min(160, bounds.width - 16)))
+            let center = pill.frame.minX + pill.dotCenterX(i)
+            // Centered over its dot, but kept inside the window.
+            let x = min(max(8, center - size.width / 2), bounds.width - 8 - size.width)
+            l.frame = NSRect(x: x.rounded(), y: pill.frame.maxY - 2, width: size.width, height: size.height)
         }
     }
 
-    private func labelFrame() -> NSRect {
-        let size = nameBubble.fit(maxWidth: max(40, bounds.width - 24))
-        let center = pill.frame.minX + pill.dotCenterX(labelIndex ?? pill.activeIndex)
-        // Centered over the dot, but kept inside the window.
-        let x = min(max(8, center - size.width / 2), bounds.width - 8 - size.width)
-        return NSRect(x: x.rounded(), y: pill.frame.maxY - 2, width: size.width, height: size.height)
+    /// Shows the label over dot `index` (nil hides). Labels are independent:
+    /// the old one fades out in place while the new one fades in rising 3pt.
+    func showLabel(at index: Int?) {
+        let allowed = bounds.height >= 100 && pill.dotCount > 1
+        let target = allowed ? index : nil
+        guard target != shownLabel else { return }
+        if let old = shownLabel, dotLabels.indices.contains(old) { Self.fadeOut(dotLabels[old]) }
+        shownLabel = target
+        if let t = target, dotLabels.indices.contains(t) { Self.fadeIn(dotLabels[t]) }
     }
 
-    private func layoutName() {
-        let f = labelFrame()
-        nameBubble.setFrameSize(f.size)
-        if labelIndex != nil { nameBubble.frame = f }
+    private static func fadeIn(_ v: NSView) {
+        guard let l = v.layer else { return }
+        l.removeAllAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        l.opacity = 1
+        CATransaction.commit()
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0
+        fade.toValue = 1
+        let rise = CABasicAnimation(keyPath: "transform.translation.y")
+        rise.fromValue = -3
+        rise.toValue = 0
+        let group = CAAnimationGroup()
+        group.animations = [fade, rise]
+        group.duration = 0.16
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        l.add(group, forKey: "appear")
+    }
+
+    private static func fadeOut(_ v: NSView) {
+        guard let l = v.layer else { return }
+        let from = l.presentation()?.opacity ?? l.opacity
+        l.removeAllAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        l.opacity = 0
+        CATransaction.commit()
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = from
+        fade.toValue = 0
+        fade.duration = 0.12
+        l.add(fade, forKey: "disappear")
     }
 
     func updatePillVisibility() {
         let fits = pill.frame.width + 16 <= bounds.width && bounds.height >= 70
         let show = (hovering || peeking) && fits && pill.dotCount > 1
         let showClose = hovering && bounds.width >= 60 && bounds.height >= 50
-        if !show && labelIndex != nil { showLabel(at: nil) }
+        if !show { showLabel(at: nil) }
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             pill.animator().alphaValue = show ? 1 : 0
@@ -904,7 +926,7 @@ final class FilterController: NSObject, NSWindowDelegate {
         root.tint.layer?.backgroundColor = p.tint.nsColor.withAlphaComponent(CGFloat(p.tintOpacity)).cgColor
 
         root.pill.update(presets: store.presets, activeID: active.id)
-        root.setName(p.name.isEmpty ? "Untitled" : p.name)
+        root.setLabelNames(store.presets.map(\.name))
         root.layoutPill()
     }
 
